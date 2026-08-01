@@ -1,0 +1,6 @@
+langgraph
+pydantic
+python-dotenv
+requests
+skyfield
+pytest

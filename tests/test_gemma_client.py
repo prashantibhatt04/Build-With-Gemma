@@ -1,0 +1,116 @@
+"""Unit tests for GemmaClient's retry and cross-backend-fallback behavior.
+No real network calls - the backend methods themselves are mocked."""
+from unittest.mock import patch
+
+import pytest
+
+from src.config import Settings
+from src.gemma_client import GemmaClient, GemmaClientError
+from src.pipeline import make_decide_node
+from src.schemas import Severity, TelemetryEvent
+from datetime import datetime, timezone
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        gemma_backend="ollama",
+        gemma_model="gemma4:e4b",
+        ollama_host="http://localhost:11434",
+        gemma_api_key="test-api-key",
+        gemma_model_api="gemma-4-26b-a4b-it",
+        log_dir="./logs",
+        delta_v_budget_m_s=5.0,
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+def test_generate_succeeds_on_primary_without_touching_fallback():
+    client = GemmaClient(settings=_settings())
+
+    with patch.object(client, "_generate_ollama", return_value="primary ok") as mock_ollama, \
+         patch.object(client, "_generate_hosted_api") as mock_api:
+        result = client.generate(prompt="test prompt")
+
+    assert result == "primary ok"
+    assert mock_ollama.call_count == 1
+    mock_api.assert_not_called()
+    assert client.last_backend_used == "ollama"
+
+
+def test_generate_falls_back_to_other_backend_after_primary_exhausts_retry():
+    client = GemmaClient(settings=_settings(gemma_backend="ollama"))
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("ollama down")) as mock_ollama, \
+         patch.object(client, "_generate_hosted_api", return_value="fallback response") as mock_api:
+        result = client.generate(prompt="test prompt")
+
+    assert result == "fallback response"
+    assert mock_ollama.call_count == 2  # original attempt + same-backend retry
+    assert mock_api.call_count == 1
+    assert client.last_backend_used == "api"
+
+
+def test_generate_raises_primary_error_if_other_backend_unconfigured():
+    client = GemmaClient(settings=_settings(gemma_backend="ollama", gemma_api_key=""))
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("ollama down")) as mock_ollama, \
+         patch.object(client, "_generate_hosted_api") as mock_api:
+        with pytest.raises(GemmaClientError, match="ollama down"):
+            client.generate(prompt="test prompt")
+
+    assert mock_ollama.call_count == 2
+    mock_api.assert_not_called()
+
+
+def test_generate_raises_primary_error_if_fallback_also_fails():
+    client = GemmaClient(settings=_settings(gemma_backend="ollama"))
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("ollama down")), \
+         patch.object(client, "_generate_hosted_api", side_effect=GemmaClientError("api also down")):
+        with pytest.raises(GemmaClientError, match="ollama down"):
+            client.generate(prompt="test prompt")
+
+    assert client.last_backend_used is None
+
+
+def _make_conjunction_event(min_distance_km: float) -> TelemetryEvent:
+    return TelemetryEvent(
+        event_id="conj-test",
+        timestamp=datetime.now(timezone.utc),
+        source="celestrak",
+        raw_data={
+            "object_a_id": "1", "object_a_name": "A",
+            "object_b_id": "2", "object_b_name": "B",
+            "min_distance_km": min_distance_km,
+            "time_of_closest_approach": "2026-08-02T00:00:00+00:00",
+            "relative_velocity_km_s": 5.0,
+        },
+    )
+
+
+def test_rationale_provenance_reflects_cross_backend_fallback():
+    """End-to-end through decide_node: when the primary backend fails and
+    GemmaClient falls over to the other one, GemmaProvenance.model_used
+    should say so, not silently report the configured-but-failing backend."""
+    from src.schemas import AnomalyFinding
+
+    client = GemmaClient(settings=_settings(gemma_backend="ollama"))
+    event = _make_conjunction_event(50.0)
+    finding = AnomalyFinding(
+        event_id=event.event_id, severity=Severity.WATCH,
+        description="Test finding.", confidence=0.8,
+    )
+    decide_node = make_decide_node(client)
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("ollama down")), \
+         patch.object(client, "_generate_hosted_api", return_value="Recommendation: continue."):
+        result_state = decide_node({
+            "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+        })
+
+    provenance = result_state["rationale_provenance"]
+    assert provenance.source == "gemma"
+    assert "api" in provenance.model_used
+    assert "ollama" in provenance.model_used
+    assert result_state["decision"].rationale == "Recommendation: continue."

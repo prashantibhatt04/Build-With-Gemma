@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Env files
+.env
+
+# Logs
+logs/
+
+# Fetched TLE cache (runtime data, not source)
+data/tle_cache/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

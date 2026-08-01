@@ -8,7 +8,8 @@ source .venv/bin/activate
 
 Each stage below says what it proves and what to look for in the output.
 Nothing here touches LICENSE, TRACKS.md, or git - it's all just running
-the code that's already built (Phases 0-5).
+the code that's already built (see `PHASE_PROGRESS.md` for the full
+phase-by-phase history).
 
 ---
 
@@ -269,6 +270,16 @@ log entry in place with `maneuver_approval` (`mode="human"`,
 does this same resolution automatically, prompting live for each pending
 maneuver when run interactively.
 
+**Re-running this exact snippet:** the event ids above (`conj-critical-demo-0`
+etc.) are hardcoded, unlike `run_demo.py`'s synthetic fixture (which
+includes a per-run unique id specifically to avoid this). `mark_reviewed`/
+`approve_maneuver` match the *first* logged entry with a given event id -
+so running this snippet a second time and then trying to approve/review
+"this run's" event would silently update the stale entry from the first
+run instead. Fine for a single demo pass; if you're rehearsing repeatedly,
+either use `python scripts/run_demo.py` (handles this correctly) or vary
+the event ids yourself between runs.
+
 ---
 
 ## Stage 6 — Human review, for real
@@ -343,11 +354,14 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 47 tests, all green - orbital math, TLE parsing, the
+**What it proves:** 73 tests, all green - orbital math, TLE parsing, the
 CelesTrak adapter (mocked network), maneuver math, budget tracking,
-Gemma client retry/fallback (mocked), the full pipeline wiring, and the
-human-review log rewrite - covering everything demoed above without
-needing real network calls for CI/repeatability.
+Gemma client retry/fallback (mocked), terminal rendering for every
+maneuver state, preflight checks, the full pipeline wiring, and the
+human-review/maneuver-approval log rewrites - covering everything demoed
+above without needing real network calls for CI/repeatability. (Check
+`PHASE_PROGRESS.md` for the current count if this drifts again as more
+gets added.)
 
 ---
 

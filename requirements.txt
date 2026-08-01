@@ -3,5 +3,6 @@ pydantic
 python-dotenv
 requests
 skyfield
+numpy
 pytest
 rich

@@ -109,7 +109,7 @@ class FailingGemmaClient:
 def test_pipeline_produces_finding_and_decision_for_every_event(tmp_path):
     settings = Settings(
         gemma_backend="ollama",
-        gemma_model="gemma3:4b",
+        gemma_model="gemma4:e4b",
         ollama_host="http://localhost:11434",
         gemma_api_key="",
         gemma_model_api="gemma-4-26b-a4b-it",

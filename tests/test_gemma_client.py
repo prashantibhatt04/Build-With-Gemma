@@ -1,5 +1,6 @@
 """Unit tests for GemmaClient's retry and cross-backend-fallback behavior.
 No real network calls - the backend methods themselves are mocked."""
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -7,8 +8,7 @@ import pytest
 from src.config import Settings
 from src.gemma_client import GemmaClient, GemmaClientError
 from src.pipeline import make_decide_node
-from src.schemas import Severity, TelemetryEvent
-from datetime import datetime, timezone
+from src.schemas import AnomalyFinding, Severity, TelemetryEvent
 
 
 def _settings(**overrides) -> Settings:
@@ -93,8 +93,6 @@ def test_rationale_provenance_reflects_cross_backend_fallback():
     """End-to-end through decide_node: when the primary backend fails and
     GemmaClient falls over to the other one, GemmaProvenance.model_used
     should say so, not silently report the configured-but-failing backend."""
-    from src.schemas import AnomalyFinding
-
     client = GemmaClient(settings=_settings(gemma_backend="ollama"))
     event = _make_conjunction_event(50.0)
     finding = AnomalyFinding(

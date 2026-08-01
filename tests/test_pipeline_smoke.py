@@ -60,11 +60,15 @@ def test_extract_final_answer_handles_empty_string():
 
 
 class FakeGemmaClient:
-    """Duck-types GemmaClient (generate() + settings.gemma_model) without
-    making any network calls."""
+    """Duck-types GemmaClient (generate() + settings.gemma_model/
+    gemma_backend) without making any network calls. gemma_backend defaults
+    to "ollama" so existing CRITICAL-severity tests (written before the
+    human-approval feature existed) keep exercising the autonomous path -
+    see test_decide_node_requires_human_approval_for_api_backend for the
+    "api" case specifically."""
 
-    def __init__(self):
-        self.settings = SimpleNamespace(gemma_model="fake-model")
+    def __init__(self, gemma_backend: str = "ollama"):
+        self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend=gemma_backend)
 
     def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
         return "Stubbed anomaly commentary: nothing to report."
@@ -74,7 +78,7 @@ class FailingGemmaClient:
     """Duck-types GemmaClient but always raises, to test fallback paths."""
 
     def __init__(self):
-        self.settings = SimpleNamespace(gemma_model="fake-model")
+        self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend="ollama")
 
     def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
         raise GemmaClientError("simulated failure")
@@ -254,6 +258,57 @@ def test_analyze_then_decide_populates_maneuver_for_critical():
     assert isinstance(decision.verified_clearance, VerifiedClearance)
     assert decision.verified_clearance.cleared is True
     assert decision.verified_clearance.new_min_distance_km > 5.0  # past CRITICAL_THRESHOLD_KM
+
+    # Local backend -> autonomous self-approval, no human in the loop.
+    assert decision.awaiting_human_approval is False
+    assert decision.maneuver_approval is not None
+    assert decision.maneuver_approval.mode == "autonomous"
+    assert decision.maneuver_approval.approved is True
+    assert decision.maneuver_approval.approved_by is None
+
+
+def test_decide_node_requires_human_approval_for_api_backend():
+    """Same CRITICAL scenario as above, but with the cloud ('api') backend
+    configured - the maneuver should be calculated and affordable, but NOT
+    auto-executed. It should wait for a human (see DecisionLogger.approve_maneuver)."""
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(FakeGemmaClient(gemma_backend="api"))
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.action == Action.ABORT
+    assert decision.maneuver_plan is not None  # visible - just not executed yet
+    assert decision.verified_clearance is None  # nothing executed yet
+    assert decision.budget_insufficient is False
+    assert decision.awaiting_human_approval is True
+    assert decision.maneuver_approval is None  # not yet resolved
+    # FakeGemmaClient ignores the prompt and always returns fixed stub text,
+    # so rationale content itself isn't checked here - see the real,
+    # non-mocked verification of the actual prompt/rationale content in the
+    # QA pass and scripts/run_demo.py.
+
+
+def test_decide_node_budget_insufficient_takes_priority_over_approval_mode():
+    """Regardless of backend, an unaffordable maneuver should never reach
+    the approval-gating branch at all - budget is checked first."""
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    tiny_tracker = DeltaVBudgetTracker(starting_budget_m_s=0.0001)
+    decide_node = make_decide_node(FakeGemmaClient(gemma_backend="api"), budget_tracker=tiny_tracker)
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.budget_insufficient is True
+    assert decision.awaiting_human_approval is False
+    assert decision.maneuver_approval is None
+    assert decision.verified_clearance is None
 
 
 def test_decide_node_leaves_maneuver_fields_none_for_non_critical():

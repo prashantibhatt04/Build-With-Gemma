@@ -52,6 +52,7 @@ class DemoContext:
     """Shared state later steps can read from earlier ones."""
 
     console: Console
+    auto: bool = False
     all_entries: list[DecisionLogEntry] = field(default_factory=list)
     reviewable_event_id: Optional[str] = None
     # Unique per script invocation - see SyntheticCriticalAdapter's
@@ -130,8 +131,44 @@ def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
     entries = run_once(adapter=SyntheticCriticalAdapter(run_id=ctx.run_id), budget_tracker=tracker, limit=4)
     render_entries(entries, console=ctx.console)
     ctx.all_entries.extend(entries)
-    # The last one is always the budget-insufficient case given the fixed
-    # budget/delta-v math above - a good candidate for the human-review step.
+
+    # Whether any of the above end up autonomous vs. awaiting human
+    # approval is driven entirely by this machine's configured Gemma
+    # backend (see decide_node) - nothing hardcoded here. If any are
+    # pending, resolve them live: prompt for approve/reject when
+    # interactive, auto-approve in --auto mode so CI doesn't hang.
+    logger = DecisionLogger()
+    for i, entry in enumerate(entries):
+        if not entry.decision.awaiting_human_approval:
+            continue
+        ctx.console.print()
+        plan = entry.decision.maneuver_plan
+        ctx.console.print(Panel(
+            f"Event: {entry.telemetry.event_id}\n"
+            f"Proposed: {plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s delta-v\n"
+            f"Target clearance: {plan.target_clearance_km:.1f} km\n"
+            "Ground control (cloud backend) is reachable, so this maneuver "
+            "will not execute without your approval.",
+            title="HUMAN APPROVAL REQUIRED",
+            title_align="left",
+            border_style="magenta",
+        ))
+        approved = True if ctx.auto else Confirm.ask("Approve this maneuver?", default=True)
+        updated = logger.approve_maneuver(
+            entry.telemetry.event_id, approved=approved, approved_by="demo-operator",
+        )
+        entries[i] = updated
+        ctx.all_entries[ctx.all_entries.index(entry)] = updated
+
+        verdict = "[green]APPROVED[/green]" if approved else "[red]REJECTED[/red]"
+        ctx.console.print(f"{verdict} by demo-operator.")
+        if updated.decision.verified_clearance is not None:
+            vc = updated.decision.verified_clearance
+            ctx.console.print(f"Verified new separation: {vc.new_min_distance_km:.2f}km (cleared={vc.cleared})")
+
+    # The last synthetic event is always the budget-insufficient case given
+    # the fixed budget/delta-v math above - a good candidate for the
+    # separate post-hoc human-review step below.
     ctx.reviewable_event_id = entries[-1].telemetry.event_id
 
 
@@ -206,12 +243,31 @@ def _step_summary(ctx: DemoContext) -> None:
 
     gemma_count = sum(1 for e in entries if e.rationale_provenance.source == "gemma")
     fallback_count = sum(1 for e in entries if e.rationale_provenance.source == "fallback")
-    maneuvers_executed = sum(1 for e in entries if e.decision.maneuver_plan and not e.decision.budget_insufficient)
+    maneuvers_executed = sum(1 for e in entries if e.decision.verified_clearance is not None)
     maneuvers_blocked = sum(1 for e in entries if e.decision.budget_insufficient)
+    maneuvers_rejected = sum(
+        1 for e in entries
+        if e.decision.maneuver_approval is not None and not e.decision.maneuver_approval.approved
+    )
+    still_pending = sum(1 for e in entries if e.decision.awaiting_human_approval)
+    autonomous = sum(
+        1 for e in entries
+        if e.decision.maneuver_approval is not None and e.decision.maneuver_approval.mode == "autonomous"
+    )
+    human_approved = sum(
+        1 for e in entries
+        if e.decision.maneuver_approval is not None
+        and e.decision.maneuver_approval.mode == "human"
+        and e.decision.maneuver_approval.approved
+    )
     ctx.console.print(
         f"Total events: {len(entries)}  |  Gemma rationale: {gemma_count}  |  "
-        f"Fallback rationale: {fallback_count}  |  Maneuvers executed: {maneuvers_executed}  |  "
-        f"Maneuvers blocked by budget: {maneuvers_blocked}"
+        f"Fallback rationale: {fallback_count}"
+    )
+    ctx.console.print(
+        f"Maneuvers executed: {maneuvers_executed} (autonomous: {autonomous}, human-approved: {human_approved})  "
+        f"|  Blocked by budget: {maneuvers_blocked}  |  Rejected by human: {maneuvers_rejected}"
+        + (f"  |  Still awaiting approval: {still_pending}" if still_pending else "")
     )
 
 
@@ -250,26 +306,32 @@ STEPS: list[Step] = [
         action=_step_live_orbital_data,
     ),
     Step(
-        phase="Phases 0-3, 5",
-        title="CRITICAL conjunctions: autonomous maneuver, verification, and delta-v budget",
+        phase="Phases 0-3, 5, 8",
+        title="CRITICAL conjunctions: maneuver, verification, budget, and human approval",
         explanation=(
             "Severity (NOMINAL/WATCH/WARNING/CRITICAL) and the resulting "
             "action are decided by a plain distance threshold, NOT by the "
-            "AI model - this needs to be reliable, so Gemma is only used "
-            "afterward to explain a decision that's already been made "
-            "deterministically. Real orbital data rarely produces a "
-            "CRITICAL case (<5km predicted separation) on demand, so this "
-            "step uses 4 synthetic CRITICAL-range conjunctions (clearly "
-            "labeled as synthetic in their source field) to demonstrate "
-            "that path on purpose. For each one: a simplified avoidance "
-            "maneuver is calculated, independently re-verified to confirm "
-            "it would actually clear the danger threshold, and only then "
-            "reported as a completed action - narrated by Gemma in past "
-            "tense, not as a suggestion. All 4 events share ONE limited "
-            "delta-v budget (a stand-in for real spacecraft fuel limits), "
-            "so watch it run out: the last event can't afford its "
-            "maneuver, and the system explicitly says so and escalates for "
-            "human review instead of silently pretending to have acted."
+            "AI model - this needs to be reliable, so Gemma only ever "
+            "explains a decision that's already been made deterministically, "
+            "never makes it. Real orbital data rarely produces a CRITICAL "
+            "case (<5km predicted separation) on demand, so this step uses "
+            "4 synthetic CRITICAL-range conjunctions (clearly labeled as "
+            "synthetic in their source field) to demonstrate that path on "
+            "purpose. For each one, a simplified avoidance maneuver is "
+            "calculated deterministically. If the shared delta-v budget "
+            "(a stand-in for real spacecraft fuel limits) can't afford it, "
+            "the system says so plainly and escalates for review rather "
+            "than pretending to act - watch the last of the 4 events hit "
+            "this. Otherwise, what happens next depends on THIS MACHINE'S "
+            "configured Gemma backend, which this system treats as a proxy "
+            "for whether ground control is currently reachable: with a "
+            "LOCAL backend (Ollama), the maneuver is independently "
+            "re-verified and self-approved immediately - no human in the "
+            "loop, because a real probe often can't wait for one (light-"
+            "delay, communication blackout). With the CLOUD backend (a "
+            "hosted API), the maneuver is calculated but held pending - "
+            "ground control is reachable, so a human must explicitly "
+            "approve it below before it executes and gets verified."
         ),
         action=_step_critical_maneuver_and_budget,
     ),
@@ -342,7 +404,7 @@ STEPS: list[Step] = [
 
 def run_steps(auto: bool) -> None:
     console = Console()
-    ctx = DemoContext(console=console)
+    ctx = DemoContext(console=console, auto=auto)
 
     console.print(Panel(
         "This is a guided walkthrough of a deep-space collision-avoidance "

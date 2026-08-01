@@ -138,3 +138,53 @@ showed human_reviewed=false right after marking it true. Fixed by
 including a per-run uuid in the synthetic event_ids; re-verified correct
 across 3 consecutive real runs. Suite unaffected (62/62, no src/ logic
 changed, only scripts/run_demo.py).
+
+## Phase 8 — Human-approval gating for CRITICAL maneuvers (local vs cloud)
+Status: done
+User's proposed design, confirmed sound before implementing: maneuver
+PHYSICS stays fully deterministic (unchanged) - what's new is an approval
+gate around COMMITTING an already-computed maneuver. The configured Gemma
+backend doubles as a stand-in for "is ground control reachable": local
+(ollama) = unreachable -> self-approve immediately based on the existing
+deterministic severity/physics checks, no human in the loop (same
+behavior as before, now explicitly labeled autonomous). Cloud (api) =
+reachable -> maneuver is calculated and budget-checked but held pending;
+a human must explicitly approve or reject it before verify_maneuver()
+ever runs. Gemma's role is unchanged in spirit - narrator only, never
+decides the physics - just now narrates a 3rd possible state ("proposed,
+awaiting approval") alongside the existing "executed" and
+"budget-insufficient" ones.
+New: schemas.ManeuverApproval (mode: autonomous/human, approved,
+approved_by, approved_at, reason) and Decision.awaiting_human_approval.
+decide_node branches on client.settings.gemma_backend after the existing
+budget check (which still takes priority - unaffordable maneuvers never
+reach the approval branch on either backend). New
+DecisionLogger.approve_maneuver() (+ scripts/approve_maneuver.py CLI,
+same in-place-rewrite pattern as mark_reviewed): on approval, actually
+runs verify_maneuver() for the first time; on rejection, records that and
+leaves nothing executed. Existing FakeGemmaClient/FailingGemmaClient test
+stubs updated to default gemma_backend="ollama" so all pre-Phase-8
+CRITICAL tests keep exercising the autonomous path they were written
+against, unchanged.
+scripts/run_demo.py's CRITICAL step now resolves any pending approvals
+live - interactive prompt per pending maneuver (auto-approved in --auto
+mode) - and the summary step reports autonomous vs human-approved vs
+rejected vs still-pending counts.
+Caught and fixed a real crash while verifying live against the real cloud
+backend (not just local): src/display.py's render_entry assumed
+verified_clearance was always set whenever budget wasn't insufficient -
+true before this phase, false now that "awaiting approval" is a 3rd
+state with both budget_insufficient=False and verified_clearance=None.
+AttributeError on entry.decision.verified_clearance.new_min_distance_km.
+Rewrote render_entry to branch on all 5 real states (budget-insufficient
+/ awaiting-approval / autonomous-executed / human-approved-executed /
+rejected) instead of assuming only 2. 3 new display tests, one explicitly
+a regression test for the exact crash. Verified real end-to-end runs on
+BOTH backends (not just unit tests): local (ollama) - confirmed
+unchanged autonomous behavior, 3 executed + 1 budget-blocked as before;
+cloud (api) - confirmed proposals correctly held pending, real Gemma
+narration reads "Maneuver proposed: awaiting human approval before
+execution", and (after the display fix) the full run completes without
+crashing through to the summary. 6 new tests total across
+test_pipeline_smoke.py/test_logging_utils.py/test_display.py. Suite:
+71/71.

@@ -25,9 +25,10 @@ def _severity_badge(severity: Severity) -> Text:
 
 def render_entry(console: Console, entry: DecisionLogEntry) -> None:
     """Prints one pipeline result as a single color-coded summary line,
-    plus a visually distinct panel if a CRITICAL maneuver was computed -
-    either executed, or calculated but blocked by an insufficient delta-v
-    budget (see maneuver.DeltaVBudgetTracker)."""
+    plus a visually distinct panel for whichever maneuver state applies:
+    blocked by budget, awaiting human approval, executed (autonomous or
+    human-approved), or rejected by a human. See schemas.Decision /
+    schemas.ManeuverApproval for what drives each state."""
     raw = entry.telemetry.raw_data
     badge = _severity_badge(entry.finding.severity)
 
@@ -43,7 +44,10 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
     if plan is None:
         return
 
-    if entry.decision.budget_insufficient:
+    decision = entry.decision
+    approval = decision.maneuver_approval
+
+    if decision.budget_insufficient:
         console.print(Panel(
             f"Required: ~{plan.magnitude_delta_v:.2f} m/s ({plan.direction}) - "
             "NOT executed, insufficient remaining delta-v budget.",
@@ -51,14 +55,37 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title_align="left",
             border_style="yellow",
         ))
-    else:
-        clearance = entry.decision.verified_clearance
+    elif decision.awaiting_human_approval:
+        console.print(Panel(
+            f"Proposed: {plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s delta-v "
+            f"(target clearance {plan.target_clearance_km:.1f}km) - "
+            "NOT executed yet, awaiting human approval.",
+            title="AWAITING HUMAN APPROVAL",
+            title_align="left",
+            border_style="magenta",
+        ))
+    elif decision.verified_clearance is not None:
+        clearance = decision.verified_clearance
+        if approval is not None and approval.mode == "human":
+            title = f"MANEUVER EXECUTED (approved by {approval.approved_by})"
+            border = "green"
+        else:
+            title = "AUTONOMOUS MANEUVER EXECUTED"
+            border = "red"
         console.print(Panel(
             f"Direction: {plan.direction}\n"
             f"Delta-v: ~{plan.magnitude_delta_v:.2f} m/s\n"
             f"Verified new separation: {clearance.new_min_distance_km:.2f}km "
             f"(cleared={clearance.cleared})",
-            title="AUTONOMOUS MANEUVER EXECUTED",
+            title=title,
+            title_align="left",
+            border_style=border,
+        ))
+    elif approval is not None and not approval.approved:
+        console.print(Panel(
+            f"Proposed maneuver ({plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s) "
+            f"was REJECTED by {approval.approved_by} - not executed.",
+            title="MANEUVER REJECTED",
             title_align="left",
             border_style="red",
         ))

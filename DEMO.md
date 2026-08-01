@@ -186,7 +186,7 @@ labeled placeholder only when no epoch signal exists at all (e.g.
 
 ---
 
-## Stage 5 — CRITICAL conjunction: autonomous maneuver + verification + budget
+## Stage 5 — CRITICAL conjunction: maneuver, verification, budget, human approval
 
 Real data rarely gives a CRITICAL case on demand, so this uses a synthetic
 fixture (clearly labeled as such in `source`) to demo the full path
@@ -241,6 +241,28 @@ for e in entries:
   applied), and the rationale correctly says the maneuver was **calculated
   but not executed** and escalates for human review - it does not lie
   about having succeeded.
+
+**Local vs. cloud changes what happens above (Phase 8):** the snippet
+above doesn't pick a `client` explicitly, so it uses whatever this
+machine's `.env` has configured. `GEMMA_BACKEND=ollama` (local) is treated
+as "ground control unreachable" - events 0-2 self-approve and execute
+immediately, exactly as shown above. `GEMMA_BACKEND=api` (cloud) is
+treated as "ground control reachable" - events 0-2 instead come back with
+`decision.awaiting_human_approval=True` and `verified_clearance=None`
+(nothing executed yet), and the rationale reads "Maneuver proposed:
+awaiting human approval before execution." To resolve one:
+
+```bash
+python scripts/approve_maneuver.py <event_id> "your-name"            # approve
+python scripts/approve_maneuver.py <event_id> "your-name" --reject   # reject
+```
+
+This calls `DecisionLogger.approve_maneuver()`, which (if approved) runs
+`verify_maneuver()` for real at that point - not before - and rewrites the
+log entry in place with `maneuver_approval` (`mode="human"`,
+`approved_by=<name>`) and (if approved) `verified_clearance`. `run_demo.py`
+does this same resolution automatically, prompting live for each pending
+maneuver when run interactively.
 
 ---
 

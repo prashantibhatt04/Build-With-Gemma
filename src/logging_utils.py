@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Settings, settings as default_settings
-from .schemas import DecisionLogEntry
+from .maneuver import verify_maneuver
+from .schemas import DecisionLogEntry, ManeuverApproval
 
 
 class DecisionLogger:
@@ -39,15 +40,21 @@ class DecisionLogger:
                     return path, i, entry
         return None
 
+    @staticmethod
+    def _rewrite_line(path: Path, line_index: int, updated_entry: DecisionLogEntry) -> None:
+        """Rewrites a single line of an existing log file in place. The log
+        is append-only by design (see class docstring) - mark_reviewed and
+        approve_maneuver are the two intentional exceptions, since the
+        fields they set already exist on the schema and are otherwise
+        permanently inert."""
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines[line_index] = updated_entry.model_dump_json()
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     def mark_reviewed(self, event_id: str, reviewed_by: str) -> DecisionLogEntry:
         """Sets human_reviewed/human_reviewed_at/reviewed_by on the logged
-        entry matching event_id and rewrites that one line in place.
-
-        The log is append-only by design (see class docstring) - this is
-        the one intentional exception, since human_reviewed/human_reviewed_at
-        already exist on DecisionLogEntry and are otherwise permanently
-        inert. Raises ValueError if no entry with this event_id is found.
-        """
+        entry matching event_id and rewrites that one line in place. Raises
+        ValueError if no entry with this event_id is found."""
         found = self.find_entry(event_id)
         if found is None:
             raise ValueError(f"No logged decision found with event_id={event_id!r}")
@@ -58,8 +65,60 @@ class DecisionLogger:
             "human_reviewed_at": datetime.now(timezone.utc),
             "reviewed_by": reviewed_by,
         })
-
-        lines = path.read_text(encoding="utf-8").splitlines()
-        lines[line_index] = updated.model_dump_json()
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._rewrite_line(path, line_index, updated)
         return updated
+
+    def approve_maneuver(self, event_id: str, approved: bool, approved_by: str) -> DecisionLogEntry:
+        """Resolves a CRITICAL-severity maneuver that's awaiting human
+        approval (cloud/api backend - see pipeline.decide_node and
+        schemas.ManeuverApproval).
+
+        If approved: actually verifies the maneuver now (nothing was
+        applied while it was pending) and records who approved it. If
+        rejected: records that: verified_clearance stays None, nothing was
+        executed. Either way, awaiting_human_approval flips to False and
+        maneuver_approval gets populated. Rewrites the matching log line in
+        place, same mechanism as mark_reviewed.
+
+        Raises ValueError if no matching entry is found, or if it isn't
+        actually awaiting approval (already resolved, budget-blocked
+        instead, or not CRITICAL at all).
+        """
+        found = self.find_entry(event_id)
+        if found is None:
+            raise ValueError(f"No logged decision found with event_id={event_id!r}")
+        path, line_index, entry = found
+
+        if not entry.decision.awaiting_human_approval:
+            raise ValueError(
+                f"Decision for event_id={event_id!r} is not awaiting human approval "
+                f"(awaiting_human_approval={entry.decision.awaiting_human_approval})"
+            )
+
+        now = datetime.now(timezone.utc)
+        if approved:
+            verified_clearance = verify_maneuver(
+                entry.telemetry.raw_data["min_distance_km"], entry.decision.maneuver_plan,
+            )
+            status_note = f"[HUMAN DECISION: APPROVED by {approved_by}]"
+        else:
+            verified_clearance = None
+            status_note = f"[HUMAN DECISION: REJECTED by {approved_by}]"
+
+        approval = ManeuverApproval(
+            mode="human",
+            approved=approved,
+            approved_by=approved_by,
+            approved_at=now,
+            reason=f"{'Approved' if approved else 'Rejected'} via approve_maneuver (CLI/demo prompt).",
+        )
+        updated_decision = entry.decision.model_copy(update={
+            "awaiting_human_approval": False,
+            "verified_clearance": verified_clearance,
+            "maneuver_approval": approval,
+            "rationale": f"{entry.decision.rationale} {status_note}",
+        })
+        updated_entry = entry.model_copy(update={"decision": updated_decision})
+
+        self._rewrite_line(path, line_index, updated_entry)
+        return updated_entry

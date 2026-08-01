@@ -25,6 +25,7 @@ from .schemas import (
     Decision,
     DecisionLogEntry,
     GemmaProvenance,
+    ManeuverApproval,
     ManeuverPlan,
     Severity,
     TelemetryEvent,
@@ -204,6 +205,7 @@ def _decision_rationale(
     maneuver_plan: Optional[ManeuverPlan] = None,
     verified_clearance: Optional[VerifiedClearance] = None,
     budget_insufficient: bool = False,
+    awaiting_human_approval: bool = False,
 ) -> tuple[str, GemmaProvenance]:
     lines = [
         f"Recommended action: {action.value}",
@@ -237,6 +239,30 @@ def _decision_rationale(
             "but budget insufficient - escalating for human review.\"). Do "
             "NOT say or imply that a maneuver was executed, or that clearance "
             "was achieved, or that the situation is resolved."
+        )
+    elif finding.severity == Severity.CRITICAL and maneuver_plan is not None and awaiting_human_approval:
+        # Cloud backend ("ground control reachable" in this system's
+        # model) - maneuver is calculated and affordable, but must not be
+        # narrated as executed until a human explicitly approves it via
+        # DecisionLogger.approve_maneuver.
+        lines += [
+            f"Proposed maneuver: {maneuver_plan.direction}, "
+            f"~{maneuver_plan.magnitude_delta_v:.2f} m/s delta-v "
+            f"(target clearance {maneuver_plan.target_clearance_km:.1f} km)",
+            "Status: awaiting human approval before execution",
+        ]
+        instruction = (
+            "An avoidance maneuver has been CALCULATED and is affordable, "
+            "but has NOT been executed - it is a PROPOSAL awaiting explicit "
+            "human approval before it can proceed (ground control is "
+            "reachable via the cloud backend, so this system does not act "
+            "alone). State plainly, as your first sentence, that a maneuver "
+            "has been proposed and is awaiting human confirmation (e.g. "
+            "\"Maneuver proposed: awaiting human approval before "
+            "execution.\"). Briefly summarize the proposed direction and "
+            "why it's needed. Do NOT say or imply that it has already been "
+            "executed, verified, or that the situation is resolved - it is "
+            "not resolved until a human approves it."
         )
     elif finding.severity == Severity.CRITICAL and maneuver_plan is not None and verified_clearance is not None:
         # CRITICAL is the one severity where an action has already been
@@ -291,10 +317,13 @@ def _decision_rationale(
                "collision-avoidance action in plain language. Be concise, "
                "factual, decisive, and avoid precise maneuver figures beyond "
                "what you're explicitly given. The action has already been "
-               "decided (and, for CRITICAL cases, already executed) "
-               "deterministically before you are called - your job is to "
-               "explain it, not second-guess it. Never hedge on or contradict "
-               "the action or severity you are given. Respond in plain prose "
+               "decided deterministically before you are called - for "
+               "CRITICAL cases it may already be executed (autonomous, no "
+               "human in the loop) or awaiting a human's explicit approval; "
+               "follow the specific instructions below for which applies. "
+               "Your job is to explain the current state accurately, not "
+               "decide or second-guess it. Never hedge on or contradict the "
+               "action or severity you are given. Respond in plain prose "
                "only - no LaTeX, no markdown formatting, no special notation.",
         fallback_text=fallback_text,
     )
@@ -317,7 +346,9 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
 
         maneuver_plan: Optional[ManeuverPlan] = None
         verified_clearance: Optional[VerifiedClearance] = None
+        maneuver_approval: Optional[ManeuverApproval] = None
         budget_insufficient = False
+        awaiting_human_approval = False
         if finding.severity == Severity.CRITICAL:
             # CRITICAL is only ever produced from conjunction-shaped raw_data
             # (see classify_conjunction_severity), so these keys are present.
@@ -328,15 +359,38 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
                 relative_velocity_km_s=raw["relative_velocity_km_s"],
             )
             if budget_tracker.consume(maneuver_plan.magnitude_delta_v):
-                verified_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
+                # Backend choice doubles as "is ground control reachable"
+                # in this system's model (see ManeuverApproval docstring):
+                # local (ollama) -> treat as unreachable -> self-approve
+                # based on the deterministic checks already done above.
+                # api (or anything else/unrecognized) -> treat as reachable
+                # -> require an explicit human approval before executing;
+                # unrecognized defaults to requiring a human as the safer
+                # fail-safe, not to full autonomy.
+                configured_backend = getattr(client.settings, "gemma_backend", None)
+                if configured_backend == "ollama":
+                    verified_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
+                    maneuver_approval = ManeuverApproval(
+                        mode="autonomous",
+                        approved=True,
+                        approved_by=None,
+                        approved_at=datetime.now(timezone.utc),
+                        reason=(
+                            "Local backend - ground control treated as unreachable; "
+                            "approved autonomously based on deterministic severity/physics checks."
+                        ),
+                    )
+                else:
+                    awaiting_human_approval = True
             else:
                 # Plan stays visible (mission control can see what would've
                 # been needed) but nothing was actually applied, so there's
-                # nothing to verify.
+                # nothing to verify and no approval to seek yet.
                 budget_insufficient = True
 
         rationale, rationale_provenance = _decision_rationale(
-            client, finding, action, raw, maneuver_plan, verified_clearance, budget_insufficient,
+            client, finding, action, raw, maneuver_plan, verified_clearance,
+            budget_insufficient, awaiting_human_approval,
         )
 
         decision = Decision(
@@ -346,6 +400,8 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
             maneuver_plan=maneuver_plan,
             verified_clearance=verified_clearance,
             budget_insufficient=budget_insufficient,
+            awaiting_human_approval=awaiting_human_approval,
+            maneuver_approval=maneuver_approval,
         )
         return {**state, "decision": decision, "rationale_provenance": rationale_provenance}
 

@@ -62,6 +62,30 @@ class VerifiedClearance(BaseModel):
     verified_at: datetime
 
 
+class ManeuverApproval(BaseModel):
+    """Records how a CRITICAL maneuver was authorized to proceed.
+
+    mode="autonomous": the configured Gemma backend is "ollama" (local) -
+    in this system, local-only is used as a stand-in for "ground control is
+    currently unreachable" (e.g. communication blackout, light-delay), so
+    the maneuver is self-approved based purely on the deterministic
+    severity/physics checks already computed (maneuver_plan), with no
+    human in the loop. Gemma still only narrates this - it never decides
+    the maneuver itself.
+
+    mode="human": the configured backend is "api" (cloud) - a stand-in for
+    "ground control is reachable" - so a real person must explicitly
+    confirm before the maneuver is treated as executed. See
+    src/logging_utils.py:DecisionLogger.approve_maneuver.
+    """
+
+    mode: Literal["autonomous", "human"]
+    approved: bool
+    approved_by: Optional[str] = None  # None for autonomous approvals
+    approved_at: datetime
+    reason: str
+
+
 class Decision(BaseModel):
     action: Action
     rationale: str
@@ -75,6 +99,14 @@ class Decision(BaseModel):
     # src/maneuver.py:DeltaVBudgetTracker) - in that case verified_clearance
     # stays None, since nothing was actually applied to verify.
     budget_insufficient: bool = False
+    # True when a CRITICAL maneuver was calculated and the budget allows it,
+    # but it has NOT yet been executed/verified because it's waiting on a
+    # human to approve it (cloud backend - see ManeuverApproval). While this
+    # is True, verified_clearance stays None; once resolved (see
+    # DecisionLogger.approve_maneuver), this flips to False and
+    # maneuver_approval gets populated either way (approved or rejected).
+    awaiting_human_approval: bool = False
+    maneuver_approval: Optional[ManeuverApproval] = None
 
 
 class GemmaProvenance(BaseModel):

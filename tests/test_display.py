@@ -11,6 +11,7 @@ from src.schemas import (
     Decision,
     DecisionLogEntry,
     GemmaProvenance,
+    ManeuverApproval,
     Severity,
     TelemetryEvent,
 )
@@ -101,6 +102,54 @@ def test_render_entry_shows_budget_insufficient_panel():
 
     assert "BUDGET INSUFFICIENT" in output
     assert "NOT executed" in output
+
+
+def test_render_entry_shows_awaiting_approval_panel_without_crashing():
+    """Regression test: this is the exact state (maneuver_plan set,
+    verified_clearance=None, budget_insufficient=False,
+    awaiting_human_approval=True) that crashed render_entry with an
+    AttributeError before this state existed in the renderer's logic."""
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.CRITICAL, min_distance_km=2.0)
+    entry.decision.verified_clearance = None
+    entry.decision.awaiting_human_approval = True
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "AWAITING HUMAN APPROVAL" in output
+    assert "NOT executed yet" in output
+
+
+def test_render_entry_shows_human_approved_execution_panel():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.CRITICAL, min_distance_km=2.0)
+    entry.decision.maneuver_approval = ManeuverApproval(
+        mode="human", approved=True, approved_by="alice",
+        approved_at=datetime.now(timezone.utc), reason="Approved via CLI.",
+    )
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "approved by alice" in output
+    assert "AUTONOMOUS" not in output  # this one was human-approved, not autonomous
+
+
+def test_render_entry_shows_rejected_panel():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.CRITICAL, min_distance_km=2.0)
+    entry.decision.verified_clearance = None
+    entry.decision.maneuver_approval = ManeuverApproval(
+        mode="human", approved=False, approved_by="bob",
+        approved_at=datetime.now(timezone.utc), reason="Rejected via CLI.",
+    )
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "MANEUVER REJECTED" in output
+    assert "REJECTED by bob" in output
 
 
 def test_render_entry_handles_non_conjunction_event_without_crashing():

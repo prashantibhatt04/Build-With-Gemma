@@ -426,6 +426,7 @@ def run_once(
 
 
 if __name__ == "__main__":
+    from .display import render_entries
+
     results = run_once(limit=3)
-    for entry in results:
-        print(entry.model_dump_json(indent=2))
+    render_entries(results)

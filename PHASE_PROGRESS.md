@@ -89,4 +89,52 @@ DecisionLogEntry, plus scripts/mark_reviewed.py CLI - verified with a real
 (non-mocked) log-then-mark run, not just unit tests. Suite: 44/44.
 
 ## Phase 6 — Terminal output styling
-Status: not started
+Status: done
+Added `rich` to requirements.txt. New src/display.py (render_entry/
+render_entries): color-coded severity badges (green NOMINAL, yellow WATCH,
+dark_orange WARNING, bold red CRITICAL), one-line summary per event
+(object names, distance, severity, rationale), and a bordered Panel when a
+CRITICAL maneuver was computed - one style for "executed" (red border,
+direction/delta-v/verified clearance) and a distinct one for
+"budget-insufficient" (yellow border, "NOT executed... escalate for
+review"). Only src/pipeline.py's `if __name__` block was touched - log_node/
+DecisionLogger untouched, confirmed by grepping the actual log file for
+styling artifacts (rich markup, box-drawing characters) after a real run:
+zero matches. 5 new tests (Console(record=True), no real terminal needed).
+Suite: 53/53. Real run output pasted in chat for review.
+
+## Phase 7 — Preflight check + automatic demo runner
+Status: done
+Not user-specified yet at time of building (user said "implement next
+phase" while setting up the laptop demo) - judgment call: since exactly
+that laptop setup was the live task, built the thing most useful for it
+right now. New src/preflight.py: check_config (validates GEMMA_BACKEND +
+that GEMMA_API_KEY is set when backend=api), check_log_dir_writable,
+check_gemma_reachable (one real call, reports which backend actually
+answered - flags if it silently fell back). New scripts/run_demo.py: runs
+preflight as a rich Table, then a live CelesTrak scan, then the same
+synthetic CRITICAL/budget-depletion scenario as DEMO.md Stage 5, all via
+src/display.py, ending in a rich summary table (counts by severity, Gemma
+vs fallback split, maneuvers executed vs budget-blocked). One command,
+no copy-pasting DEMO.md snippets. 9 new tests (Gemma connectivity mocked,
+config/filesystem checks real). Suite: 62/62. Ran the real script
+end-to-end - confirmed log file untouched by styling (same check as Phase
+6).
+REVISED after user feedback: wanted ONE reusable, step-by-step,
+self-explanatory demo script instead of a straight-through batch run -
+rewrote scripts/run_demo.py entirely around a `Step` list (phase, title,
+explanation, action), each one printing a plain-language explanation
+(written for a cold GitHub reader, not just someone who built it) and
+pausing for Enter/skip before running (rich Confirm.ask; `--auto` skips
+pauses for CI). Now covers 8 steps: preflight, live CelesTrak data,
+CRITICAL maneuver+verification+budget depletion, live local/cloud
+failover, human review, raw audit log readback, test suite, summary.
+Designed so adding a future phase means appending one Step, not writing
+a new file. Caught and fixed a real bug while re-running it live:
+synthetic event_ids were hardcoded per-index (not per-run), so a second
+demo run's mark_reviewed/find_entry matched the FIRST same-id entry
+(from an earlier run) instead of the current run's - audit-trail step
+showed human_reviewed=false right after marking it true. Fixed by
+including a per-run uuid in the synthetic event_ids; re-verified correct
+across 3 consecutive real runs. Suite unaffected (62/62, no src/ logic
+changed, only scripts/run_demo.py).

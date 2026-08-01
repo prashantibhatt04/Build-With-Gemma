@@ -45,10 +45,45 @@ Confirm the environment is sound before running anything else:
 python -m pytest -v
 ```
 
-All 48 tests should pass - they're fully mocked, no network or Ollama
-required, so this works identically on any machine with the deps
-installed. Then continue with Stage 0 below, which is the first command
-that actually depends on which Gemma backend is configured.
+All tests should pass (check `PHASE_PROGRESS.md` for the current count) -
+they're fully mocked, no network or Ollama required, so this works
+identically on any machine with the deps installed. Then continue with
+Stage 0 below, which is the first command that actually depends on which
+Gemma backend is configured.
+
+---
+
+## Quick start: the one-file guided demo
+
+Everything below (Stages 0, 2, and 5) is also available as a single,
+self-contained, step-by-step script - this is the recommended way to
+demo the project, including to someone with no other context (e.g.
+reading this repo cold on GitHub):
+
+```bash
+python scripts/run_demo.py
+```
+
+It pauses before each step, prints a plain-language explanation of what
+that step demonstrates and why, then waits for you to press Enter (or
+type `n` to skip that step) before running it. Covers: a preflight check
+(config, log directory, real Gemma connectivity), a live CelesTrak scan,
+the synthetic CRITICAL/budget-depletion scenario, a live local/cloud
+failover proof, marking a decision human-reviewed, reading back the raw
+audit log entry, running the test suite, and a summary table.
+
+For a non-interactive run (CI / quick smoke-testing, no pauses):
+
+```bash
+python scripts/run_demo.py --auto
+```
+
+**This is the file to update every time a new phase is added** - append
+a new `Step(...)` to the `STEPS` list in `scripts/run_demo.py` with its
+own self-contained explanation, rather than writing a new script. The
+stage-by-stage walkthrough below is still worth keeping around for
+copy-pasting an individual piece in isolation, but `run_demo.py` is the
+canonical, always-up-to-date demo.
 
 ---
 

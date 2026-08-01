@@ -4,3 +4,4 @@ python-dotenv
 requests
 skyfield
 pytest
+rich

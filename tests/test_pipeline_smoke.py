@@ -11,7 +11,14 @@ from src.gemma_client import GemmaClientError
 from src.ingestion.base_adapter import DummyAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
-from src.pipeline import _extract_final_answer, make_analyze_node, make_decide_node, run_once
+from src.pipeline import (
+    _MANEUVER_VETO_SYSTEM,
+    _extract_final_answer,
+    _parse_veto_verdict,
+    make_analyze_node,
+    make_decide_node,
+    run_once,
+)
 from src.schemas import Action, AnomalyFinding, ManeuverPlan, Severity, TelemetryEvent, VerifiedClearance
 
 
@@ -81,18 +88,50 @@ def test_extract_final_answer_falls_back_to_last_line_if_nothing_substantive():
     assert _extract_final_answer("Ok.\nSure.\nYes.") == "Yes."
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("GO - the numbers are safe.", True),
+        ("NO-GO - inconsistent numbers.", False),
+        ("NO GO, this does not look right.", False),
+        ("go", True),
+        ("no-go", False),
+        ("The verdict is GO.", True),
+        ("Ergo, the maneuver should proceed.", None),  # "ergo" isn't a false positive
+        ("Going forward, this looks fine.", None),  # "going" isn't a false positive either
+        ("Sounds fine to me.", None),  # no verdict token at all
+        ("", None),
+        # Chain-of-thought before the real verdict - last token found wins,
+        # same philosophy as _extract_final_answer.
+        ("Let me think... maybe GO? Actually, NO-GO given the risk.", False),
+    ],
+)
+def test_parse_veto_verdict(text, expected):
+    assert _parse_veto_verdict(text) is expected
+
+
 class FakeGemmaClient:
     """Duck-types GemmaClient (generate() + settings.gemma_model/
     gemma_backend) without making any network calls. gemma_backend defaults
     to "ollama" so existing CRITICAL-severity tests (written before the
     human-approval feature existed) keep exercising the autonomous path -
     see test_decide_node_requires_human_approval_for_api_backend for the
-    "api" case specifically."""
+    "api" case specifically.
 
-    def __init__(self, gemma_backend: str = "ollama"):
+    veto_response controls what a CRITICAL-autonomous maneuver's veto-check
+    call (see pipeline._maneuver_veto_check) gets back - distinguished from
+    every other call by its distinct system prompt, so it can be varied
+    independently of the narration/description stub text below. Defaults
+    to an affirming "GO" so existing tests not concerned with Phase 9 keep
+    exercising the executed path unchanged."""
+
+    def __init__(self, gemma_backend: str = "ollama", veto_response: str = "GO - the verified numbers look safe."):
         self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend=gemma_backend)
+        self.veto_response = veto_response
 
     def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
+        if system == _MANEUVER_VETO_SYSTEM:
+            return self.veto_response
         return "Stubbed anomaly commentary: nothing to report."
 
 
@@ -288,6 +327,14 @@ def test_analyze_then_decide_populates_maneuver_for_critical():
     assert decision.maneuver_approval.approved is True
     assert decision.maneuver_approval.approved_by is None
 
+    # Phase 9: Gemma's own veto check (a real GO verdict, not hardcoded)
+    # ran and affirmed the already-verified-safe maneuver.
+    assert "affirmed by Gemma" in decision.maneuver_approval.reason
+    veto_provenance = result_state["veto_provenance"]
+    assert veto_provenance is not None
+    assert veto_provenance.source == "gemma"
+    assert veto_provenance.model_used == "fake-model"
+
 
 def test_decide_node_requires_human_approval_for_api_backend():
     """Same CRITICAL scenario as above, but with the cloud ('api') backend
@@ -308,6 +355,9 @@ def test_decide_node_requires_human_approval_for_api_backend():
     assert decision.budget_insufficient is False
     assert decision.awaiting_human_approval is True
     assert decision.maneuver_approval is None  # not yet resolved
+    # Gemma veto-checking only applies to the autonomous (local) path -
+    # the cloud path relies on the human instead, so no veto check runs.
+    assert result_state["veto_provenance"] is None
     # FakeGemmaClient ignores the prompt and always returns fixed stub text,
     # so rationale content itself isn't checked here - see the real,
     # non-mocked verification of the actual prompt/rationale content in the
@@ -331,6 +381,8 @@ def test_decide_node_budget_insufficient_takes_priority_over_approval_mode():
     assert decision.awaiting_human_approval is False
     assert decision.maneuver_approval is None
     assert decision.verified_clearance is None
+    # Budget is checked before any veto check runs.
+    assert result_state["veto_provenance"] is None
 
 
 def test_decide_node_leaves_maneuver_fields_none_for_non_critical():
@@ -385,6 +437,10 @@ def test_decide_node_flags_budget_insufficient_without_executing():
 
 
 def test_decide_node_falls_back_when_gemma_fails():
+    """FailingGemmaClient always raises, so this also proves Phase 9's
+    fail-safe: an unreachable Gemma is NOT treated as a veto - the
+    already-verified-safe maneuver still executes autonomously even though
+    the veto-check call itself failed."""
     event = _make_conjunction_event(3.0)
     finding = _make_finding(Severity.CRITICAL, event)
     decide_node = make_decide_node(FailingGemmaClient())
@@ -397,7 +453,69 @@ def test_decide_node_falls_back_when_gemma_fails():
     assert decision.action == Action.ABORT
     assert "fallback" in decision.rationale.lower()
 
+    # Fail-safe: Gemma unreachable during the veto check still results in
+    # the maneuver executing (physics-only autonomy), not a veto.
+    assert decision.maneuver_approval is not None
+    assert decision.maneuver_approval.approved is True
+    assert isinstance(decision.verified_clearance, VerifiedClearance)
+    veto_provenance = result_state["veto_provenance"]
+    assert veto_provenance is not None
+    assert veto_provenance.source == "fallback"
+
     provenance = result_state["rationale_provenance"]
     assert provenance.source == "fallback"
     assert provenance.model_used == "fake-model"
     assert provenance.latency_ms >= 0
+
+
+def test_decide_node_gemma_veto_blocks_autonomous_maneuver():
+    """Phase 9: on the autonomous (local) path, Gemma gets a real GO/NO-GO
+    veto over an already-verified-safe maneuver, standing in for the
+    unavailable human. An explicit NO-GO blocks execution entirely, even
+    though the deterministic physics check already verified it safe."""
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(
+        FakeGemmaClient(veto_response="NO-GO - the numbers look inconsistent.")
+    )
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.maneuver_plan is not None  # still visible - just not executed
+    assert decision.verified_clearance is None  # NOT executed - Gemma vetoed it
+    assert decision.awaiting_human_approval is False  # autonomous path, not cloud
+    assert decision.maneuver_approval is not None
+    assert decision.maneuver_approval.mode == "autonomous"
+    assert decision.maneuver_approval.approved is False
+    assert decision.maneuver_approval.approved_by is not None
+    assert "gemma" in decision.maneuver_approval.approved_by.lower()
+    assert "NO-GO" in decision.maneuver_approval.reason
+    # FakeGemmaClient ignores the prompt and always returns fixed stub text
+    # for narration, so decision.rationale content isn't checked here - see
+    # the real, non-mocked prompt/rationale verification in scripts/run_demo.py.
+
+    veto_provenance = result_state["veto_provenance"]
+    assert veto_provenance is not None
+    assert veto_provenance.source == "gemma"
+
+
+def test_decide_node_gemma_veto_defaults_to_no_go_when_unparseable():
+    """Fail-safe: if Gemma responds but its answer has no clear GO/NO-GO
+    token, that's treated as a veto (the conservative default), not a free
+    pass - distinct from Gemma being unreachable, which IS a free pass
+    (see test_decide_node_falls_back_when_gemma_fails)."""
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(FakeGemmaClient(veto_response="Sounds fine to me."))
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.verified_clearance is None
+    assert decision.maneuver_approval.approved is False
+    assert "parseable" in decision.maneuver_approval.reason.lower()

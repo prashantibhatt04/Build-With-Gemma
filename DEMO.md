@@ -192,7 +192,7 @@ labeled placeholder only when no epoch signal exists at all (e.g.
 
 ---
 
-## Stage 5 — CRITICAL conjunction: maneuver, verification, budget, human approval
+## Stage 5 — CRITICAL conjunction: maneuver, verification, budget, and approval (human or Gemma)
 
 Real data rarely gives a CRITICAL case on demand, so this uses a synthetic
 fixture (clearly labeled as such in `source`) to demo the full path
@@ -230,33 +230,50 @@ tracker = DeltaVBudgetTracker(starting_budget_m_s=5.0)
 entries = run_once(adapter=SyntheticCriticalAdapter(), budget_tracker=tracker, limit=4)
 for e in entries:
     d = e.decision
+    approval = d.maneuver_approval
     print(f'{e.telemetry.event_id}: budget_insufficient={d.budget_insufficient} remaining={tracker.remaining_m_s:.3f}m/s')
+    if approval is not None:
+        print(f'  approval: mode={approval.mode} approved={approval.approved} by={approval.approved_by}')
     print(f'  -> {d.rationale}')
 "
 ```
 
 **What it proves:**
 - Events 0-2: `compute_avoidance_maneuver()` + `verify_maneuver()` actually
-  run - `decision.maneuver_plan` (direction, delta-v, target clearance) and
-  `decision.verified_clearance` (new distance, `cleared: true`) are
-  populated, and Gemma narrates it as a **completed autonomous action**
-  ("Autonomous action taken: executed a radial-outward avoidance
-  maneuver...").
+  run. On the local backend, a deterministic physics check verifies the
+  maneuver safe first, then Gemma itself gets those same numbers and
+  issues a real GO/NO-GO verdict (Phase 9 - see `_maneuver_veto_check` in
+  `src/pipeline.py`) standing in for the unavailable human. When it
+  affirms (the expected outcome for a maneuver the physics already
+  verified safe), `decision.maneuver_plan` and `decision.verified_clearance`
+  (new distance, `cleared: true`) are populated, `maneuver_approval.mode`
+  reads `"autonomous"` with `approved=True`, and Gemma narrates it as a
+  **completed autonomous action** ("Autonomous action taken: executed a
+  radial-outward avoidance maneuver..."). Gemma can only make this *more*
+  conservative than the physics check, never less - if it ever vetoes an
+  already-verified-safe maneuver (or gives an unparseable answer, which
+  fail-safes to a veto too), `verified_clearance` stays `None`,
+  `maneuver_approval.approved=False`, and the rationale reads "Maneuver
+  vetoed: blocked pending review" instead. Gemma being *unreachable*
+  during this check is NOT treated as a veto - an LLM outage alone
+  shouldn't block a maneuver the physics already verified safe, so that
+  case still executes autonomously.
 - Event 3: the shared budget runs out mid-batch. `budget_insufficient`
   flips to `True`, `verified_clearance` stays `None` (nothing was actually
   applied), and the rationale correctly says the maneuver was **calculated
   but not executed** and escalates for human review - it does not lie
   about having succeeded.
 
-**Local vs. cloud changes what happens above (Phase 8):** the snippet
+**Local vs. cloud changes what happens above (Phase 8-9):** the snippet
 above doesn't pick a `client` explicitly, so it uses whatever this
 machine's `.env` has configured. `GEMMA_BACKEND=ollama` (local) is treated
-as "ground control unreachable" - events 0-2 self-approve and execute
-immediately, exactly as shown above. `GEMMA_BACKEND=api` (cloud) is
-treated as "ground control reachable" - events 0-2 instead come back with
-`decision.awaiting_human_approval=True` and `verified_clearance=None`
-(nothing executed yet), and the rationale reads "Maneuver proposed:
-awaiting human approval before execution." To resolve one:
+as "ground control unreachable" - events 0-2 go through Gemma's autonomous
+safety review described above (affirm-and-execute in the normal case).
+`GEMMA_BACKEND=api` (cloud) is treated as "ground control reachable" -
+events 0-2 instead come back with `decision.awaiting_human_approval=True`
+and `verified_clearance=None` (nothing executed yet), and the rationale
+reads "Maneuver proposed: awaiting human approval before execution." To
+resolve one:
 
 ```bash
 python scripts/approve_maneuver.py <event_id> "your-name"            # approve
@@ -354,12 +371,13 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 73 tests, all green - orbital math, TLE parsing, the
+**What it proves:** 87 tests, all green - orbital math, TLE parsing, the
 CelesTrak adapter (mocked network), maneuver math, budget tracking,
-Gemma client retry/fallback (mocked), terminal rendering for every
-maneuver state, preflight checks, the full pipeline wiring, and the
-human-review/maneuver-approval log rewrites - covering everything demoed
-above without needing real network calls for CI/repeatability. (Check
+Gemma client retry/fallback (mocked), Gemma's autonomous maneuver
+veto-check (mocked), terminal rendering for every maneuver state,
+preflight checks, the full pipeline wiring, and the human-review/
+maneuver-approval log rewrites - covering everything demoed above without
+needing real network calls for CI/repeatability. (Check
 `PHASE_PROGRESS.md` for the current count if this drifts again as more
 gets added.)
 

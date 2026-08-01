@@ -152,6 +152,27 @@ def test_render_entry_shows_rejected_panel():
     assert "REJECTED by bob" in output
 
 
+def test_render_entry_shows_vetoed_panel_distinct_from_human_rejection():
+    """Phase 9: a Gemma veto (mode="autonomous", approved=False) is a
+    different situation from a human rejecting a cloud-pending proposal -
+    it should render with its own title, not "MANEUVER REJECTED"."""
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.CRITICAL, min_distance_km=2.0)
+    entry.decision.verified_clearance = None
+    entry.decision.maneuver_approval = ManeuverApproval(
+        mode="autonomous", approved=False, approved_by="Gemma (autonomous safety review)",
+        approved_at=datetime.now(timezone.utc),
+        reason="Maneuver was independently verified safe by deterministic physics, but vetoed.",
+    )
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "MANEUVER VETOED" in output
+    assert "AUTONOMOUS SAFETY REVIEW" in output
+    assert "MANEUVER REJECTED" not in output
+
+
 def test_render_entry_handles_non_conjunction_event_without_crashing():
     console = Console(record=True, width=120)
     telemetry = TelemetryEvent(

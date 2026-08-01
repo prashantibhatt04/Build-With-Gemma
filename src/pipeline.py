@@ -9,9 +9,10 @@ placeholder behavior in both nodes.
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -40,6 +41,7 @@ class PipelineState(TypedDict):
     log_path: Optional[str]
     description_provenance: Optional[GemmaProvenance]
     rationale_provenance: Optional[GemmaProvenance]
+    veto_provenance: Optional[GemmaProvenance]
 
 
 def _describe_model_used(client: GemmaClient) -> str:
@@ -96,12 +98,19 @@ def _extract_final_answer(text: str) -> str:
 
 def _call_gemma_with_provenance(
     client: GemmaClient, prompt: str, system: str, fallback_text: str,
+    postprocess: Callable[[str], str] = _extract_final_answer,
 ) -> tuple[str, GemmaProvenance]:
     """Calls Gemma and always returns (text, provenance), never raises -
-    falls back to fallback_text on GemmaClientError."""
+    falls back to fallback_text on GemmaClientError. postprocess is applied
+    to a successful raw response before returning it - defaults to
+    _extract_final_answer (strip chain-of-thought down to the real answer).
+    The maneuver veto-check caller passes a no-op instead: it needs to scan
+    the FULL response for a GO/NO-GO token rather than just the last
+    substantive line, since a short verdict token given first (as
+    instructed) would otherwise get discarded by that last-line heuristic."""
     start = time.monotonic()
     try:
-        text = _extract_final_answer(client.generate(prompt=prompt, system=system))
+        text = postprocess(client.generate(prompt=prompt, system=system))
         source = "gemma"
         model_used = _describe_model_used(client)
     except GemmaClientError:
@@ -221,6 +230,7 @@ def _decision_rationale(
     verified_clearance: Optional[VerifiedClearance] = None,
     budget_insufficient: bool = False,
     awaiting_human_approval: bool = False,
+    maneuver_vetoed: bool = False,
 ) -> tuple[str, GemmaProvenance]:
     lines = [
         f"Recommended action: {action.value}",
@@ -279,6 +289,28 @@ def _decision_rationale(
             "executed, verified, or that the situation is resolved - it is "
             "not resolved until a human approves it."
         )
+    elif finding.severity == Severity.CRITICAL and maneuver_plan is not None and maneuver_vetoed:
+        # Autonomous (local) path only - a deterministic physics check
+        # already verified this maneuver was safe, but Gemma's own veto
+        # check (see _maneuver_veto_check) said NO-GO, standing in for the
+        # unavailable human. It was NOT applied.
+        lines += [
+            f"Proposed maneuver: {maneuver_plan.direction}, "
+            f"~{maneuver_plan.magnitude_delta_v:.2f} m/s delta-v "
+            f"(target clearance {maneuver_plan.target_clearance_km:.1f} km)",
+            "Status: VETOED by autonomous safety review before execution",
+        ]
+        instruction = (
+            "An avoidance maneuver was calculated and was affordable, and a "
+            "deterministic physics check already verified it as safe - but a "
+            "separate autonomous safety review (Gemma, standing in for the "
+            "unavailable human) VETOED it before it could execute. It was NOT "
+            "applied. State plainly, as your first sentence, that the "
+            "maneuver was vetoed and is blocked pending review (e.g. "
+            "\"Maneuver vetoed: blocked pending review.\"). Do NOT say or "
+            "imply that it was executed, that clearance was achieved, or "
+            "that the situation is resolved."
+        )
     elif finding.severity == Severity.CRITICAL and maneuver_plan is not None and verified_clearance is not None:
         # CRITICAL is the one severity where an action has already been
         # autonomously executed (not just recommended) by the time Gemma is
@@ -334,14 +366,107 @@ def _decision_rationale(
                "what you're explicitly given. The action has already been "
                "decided deterministically before you are called - for "
                "CRITICAL cases it may already be executed (autonomous, no "
-               "human in the loop) or awaiting a human's explicit approval; "
-               "follow the specific instructions below for which applies. "
+               "human in the loop), awaiting a human's explicit approval, "
+               "blocked by insufficient budget, or vetoed by a separate "
+               "autonomous safety review; follow the specific instructions "
+               "below for which applies. "
                "Your job is to explain the current state accurately, not "
                "decide or second-guess it. Never hedge on or contradict the "
                "action or severity you are given. Respond in plain prose "
                "only - no LaTeX, no markdown formatting, no special notation.",
         fallback_text=fallback_text,
     )
+
+
+_MANEUVER_VETO_SYSTEM = (
+    "You are a final autonomous safety reviewer for an avoidance maneuver "
+    "that a deterministic physics check has already computed and "
+    "independently verified as safe, on a spacecraft where ground control "
+    "is currently unreachable. You are the only check left before this "
+    "maneuver executes with no human in the loop. Your answer must begin "
+    "with a single clear verdict token, GO or NO-GO, before anything else. "
+    "Only answer NO-GO if you see a concrete problem with the numbers you "
+    "are given - do not second-guess a maneuver the numbers already show "
+    "is safe just to be cautious. Respond in plain prose only - no LaTeX, "
+    "no markdown formatting, no special notation."
+)
+
+
+def _maneuver_veto_prompt(
+    raw: dict, maneuver_plan: ManeuverPlan, verified_clearance: VerifiedClearance,
+) -> str:
+    return (
+        "A CRITICAL conjunction's avoidance maneuver has been computed and "
+        "independently verified:\n"
+        f"Object A: {raw['object_a_name']} (NORAD {raw['object_a_id']})\n"
+        f"Object B: {raw['object_b_name']} (NORAD {raw['object_b_id']})\n"
+        f"Current minimum distance: {raw['min_distance_km']:.3f} km\n"
+        f"Relative velocity: {raw['relative_velocity_km_s']:.3f} km/s\n"
+        f"Proposed maneuver: {maneuver_plan.direction}, "
+        f"{maneuver_plan.magnitude_delta_v:.2f} m/s delta-v\n"
+        f"Independently verified post-maneuver separation: "
+        f"{verified_clearance.new_min_distance_km:.2f} km "
+        f"(clears the 5km CRITICAL threshold: {verified_clearance.cleared})\n\n"
+        "GO or NO-GO?"
+    )
+
+
+# Matches "GO", "NO-GO", "NO GO", "NOGO" as whole words/phrases, case
+# insensitive. NO-GO variants are checked before bare GO in the pattern so
+# a "NO-GO" response can't register as a false-positive "GO" match.
+_VETO_VERDICT_RE = re.compile(r"\bNO[\s-]?GO\b|\bGO\b", re.IGNORECASE)
+
+
+def _parse_veto_verdict(text: str) -> Optional[bool]:
+    """Scans the full veto-check response for GO/NO-GO tokens and returns
+    the LAST one found - mirroring this project's other chain-of-thought
+    handling (_extract_final_answer): a model that reasons before its
+    verdict tends to converge on the real answer last, even though this
+    prompt asks for the verdict first. Returns None if no verdict token
+    appears anywhere - the caller treats that as a fail-safe NO-GO, not a
+    free pass."""
+    matches = _VETO_VERDICT_RE.findall(text)
+    if not matches:
+        return None
+    return not matches[-1].upper().startswith("NO")
+
+
+def _maneuver_veto_check(
+    client: GemmaClient, raw: dict, maneuver_plan: ManeuverPlan, verified_clearance: VerifiedClearance,
+) -> tuple[bool, str, GemmaProvenance]:
+    """Calls Gemma for a real GO/NO-GO verdict on an already-verified-safe
+    maneuver, standing in for the unavailable human on the autonomous
+    (local) path only (see make_decide_node). Gemma can only make the
+    outcome MORE conservative than the physics check, never less - it never
+    gets to approve something that hasn't already been independently
+    verified safe.
+
+    Returns (approved, detail, provenance). detail is a short, already-
+    labeled explanation of how the verdict was reached, meant to be
+    embedded directly into ManeuverApproval.reason:
+      - Gemma unreachable: NOT treated as a veto (an LLM outage alone
+        shouldn't block a maneuver the deterministic physics has already
+        verified safe) - approved=True, provenance.source="fallback".
+      - Gemma responds but gives no parseable GO/NO-GO verdict: fail-safe
+        default is NO-GO, not a free pass - approved=False.
+      - Gemma explicitly says NO-GO: approved=False.
+      - Gemma explicitly says GO: approved=True.
+    """
+    prompt = _maneuver_veto_prompt(raw, maneuver_plan, verified_clearance)
+    fallback_text = "Gemma unreachable; defaulting to physics-only autonomous approval (fail-safe)."
+    text, provenance = _call_gemma_with_provenance(
+        client, prompt=prompt, system=_MANEUVER_VETO_SYSTEM, fallback_text=fallback_text,
+        postprocess=lambda raw_text: raw_text.strip(),
+    )
+    if provenance.source == "fallback":
+        return True, fallback_text, provenance
+
+    verdict = _parse_veto_verdict(text)
+    if verdict is None:
+        return False, f"Gemma's response had no parseable GO/NO-GO verdict - defaulted to NO-GO (fail-safe): \"{text}\"", provenance
+    if verdict:
+        return True, f"affirmed by Gemma's autonomous safety review: \"{text}\"", provenance
+    return False, f"vetoed by Gemma's autonomous safety review: \"{text}\"", provenance
 
 
 def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetTracker] = None):
@@ -362,8 +487,10 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
         maneuver_plan: Optional[ManeuverPlan] = None
         verified_clearance: Optional[VerifiedClearance] = None
         maneuver_approval: Optional[ManeuverApproval] = None
+        veto_provenance: Optional[GemmaProvenance] = None
         budget_insufficient = False
         awaiting_human_approval = False
+        maneuver_vetoed = False
         if finding.severity == Severity.CRITICAL:
             # CRITICAL is only ever produced from conjunction-shaped raw_data
             # (see classify_conjunction_severity), so these keys are present.
@@ -384,17 +511,42 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
                 # fail-safe, not to full autonomy.
                 configured_backend = getattr(client.settings, "gemma_backend", None)
                 if configured_backend == "ollama":
-                    verified_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
-                    maneuver_approval = ManeuverApproval(
-                        mode="autonomous",
-                        approved=True,
-                        approved_by=None,
-                        approved_at=datetime.now(timezone.utc),
-                        reason=(
-                            "Local backend - ground control treated as unreachable; "
-                            "approved autonomously based on deterministic severity/physics checks."
-                        ),
+                    # A deterministic physics check verifies safety first,
+                    # then Gemma itself gets the same numbers and issues a
+                    # real GO/NO-GO, standing in for the unavailable human
+                    # (see _maneuver_veto_check). Gemma can only make this
+                    # MORE conservative than the physics check, never less.
+                    candidate_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
+                    veto_go, veto_detail, veto_provenance = _maneuver_veto_check(
+                        client, raw, maneuver_plan, candidate_clearance,
                     )
+                    if veto_go:
+                        verified_clearance = candidate_clearance
+                        maneuver_approval = ManeuverApproval(
+                            mode="autonomous",
+                            approved=True,
+                            approved_by=None,
+                            approved_at=datetime.now(timezone.utc),
+                            reason=(
+                                "Local backend - ground control treated as unreachable; "
+                                "approved autonomously based on deterministic severity/physics "
+                                f"checks, {veto_detail}"
+                            ),
+                        )
+                    else:
+                        # Not executed - verified_clearance stays None, same
+                        # invariant as budget_insufficient/awaiting_human_approval.
+                        maneuver_vetoed = True
+                        maneuver_approval = ManeuverApproval(
+                            mode="autonomous",
+                            approved=False,
+                            approved_by="Gemma (autonomous safety review)",
+                            approved_at=datetime.now(timezone.utc),
+                            reason=(
+                                "Maneuver was independently verified safe by "
+                                f"deterministic physics, but {veto_detail}"
+                            ),
+                        )
                 else:
                     awaiting_human_approval = True
             else:
@@ -405,7 +557,7 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
 
         rationale, rationale_provenance = _decision_rationale(
             client, finding, action, raw, maneuver_plan, verified_clearance,
-            budget_insufficient, awaiting_human_approval,
+            budget_insufficient, awaiting_human_approval, maneuver_vetoed,
         )
 
         decision = Decision(
@@ -418,7 +570,10 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
             awaiting_human_approval=awaiting_human_approval,
             maneuver_approval=maneuver_approval,
         )
-        return {**state, "decision": decision, "rationale_provenance": rationale_provenance}
+        return {
+            **state, "decision": decision, "rationale_provenance": rationale_provenance,
+            "veto_provenance": veto_provenance,
+        }
 
     return decide_node
 
@@ -435,6 +590,7 @@ def make_log_node(logger: DecisionLogger):
             decision=decision,
             description_provenance=state.get("description_provenance"),
             rationale_provenance=state["rationale_provenance"],
+            veto_provenance=state.get("veto_provenance"),
         )
         log_path = logger.log(entry)
         return {**state, "log_path": log_path}
@@ -483,6 +639,7 @@ def run_once(
             "log_path": None,
             "description_provenance": None,
             "rationale_provenance": None,
+            "veto_provenance": None,
         })
         entries.append(
             DecisionLogEntry(
@@ -491,6 +648,7 @@ def run_once(
                 decision=result["decision"],
                 description_provenance=result.get("description_provenance"),
                 rationale_provenance=result["rationale_provenance"],
+                veto_provenance=result.get("veto_provenance"),
             )
         )
     return entries

@@ -99,17 +99,24 @@ this maneuver execute right now, or should a human sign off first — is
 resolved by which Gemma backend is configured, used deliberately as a
 stand-in for whether ground control is reachable:
 
-- **Local (Ollama)** → ground control **unreachable** → the maneuver is
-  independently verified and self-approved immediately, no human in the
-  loop.
+- **Local (Ollama)** → ground control **unreachable** → a deterministic
+  physics check independently verifies the maneuver is safe, then **Gemma
+  itself gets those same numbers and issues a real GO/NO-GO verdict**,
+  standing in for the unavailable human — no person in the loop.
 - **Cloud (hosted API)** → ground control **reachable** → the maneuver is
   calculated and budget-checked, but held pending until a human explicitly
   approves or rejects it.
 
-Gemma's role doesn't change between the two — it never decides the
-physics, only narrates the current state (completed action vs. a proposal
-awaiting approval). What changes is whether that action has actually
-happened yet.
+This is the one place Gemma's role genuinely changes between the two
+paths. Everywhere else it never decides the physics, only narrates the
+current state. On the local path specifically, Gemma *does* make a real
+judgment call — but a tightly bounded one: it can only make the outcome
+**more** conservative than the physics check, never less. It can veto an
+already-verified-safe maneuver; it can never approve one the physics
+hasn't already cleared. An unparseable verdict fails safe to NO-GO
+(escalate), and Gemma being unreachable is *not* treated as a veto — an
+LLM outage alone shouldn't block a maneuver already proven safe, so that
+case still executes autonomously on the physics check alone.
 
 ### Path 1 — Local (Ollama): autonomous
 
@@ -127,10 +134,14 @@ flowchart TD
     I -->|"No"| J["budget_insufficient = True<br/>escalate for review, nothing executed"]
     I -->|"Yes"| K["Backend = Ollama (local)"]
     K --> L["Ground control treated as UNREACHABLE"]
-    L --> M["Self-approve autonomously<br/>(no human in the loop)"]
-    M --> N["verify_maneuver()<br/>independent re-check"]
-    N --> O["Gemma narrates:<br/>'Autonomous action taken...'"]
+    L --> M["verify_maneuver()<br/>independent physics re-check: SAFE"]
+    M --> Q{"Gemma's own GO/NO-GO veto check<br/>(_maneuver_veto_check)"}
+    Q -->|"GO (affirm)<br/>or Gemma unreachable (fail-safe)"| R["Self-approve & execute<br/>(no human in the loop)"]
+    Q -->|"NO-GO (veto)<br/>or unparseable (fail-safe)"| S["NOT executed<br/>vetoed, blocked pending review"]
+    R --> O["Gemma narrates:<br/>'Autonomous action taken...'"]
+    S --> T["Gemma narrates:<br/>'Maneuver vetoed: blocked pending review'"]
     O --> P["Append-only audit log"]
+    T --> P
     G --> P
     J --> P
 ```
@@ -202,7 +213,8 @@ in order:
 3. **CRITICAL conjunctions** — synthetic CRITICAL-range events (real data
    rarely lands there on demand) exercising maneuver calculation,
    verification, budget depletion, and — depending on this machine's
-   backend — either autonomous execution or live human-approval prompts.
+   backend — either Gemma's own autonomous GO/NO-GO safety review
+   (local) or live human-approval prompts (cloud).
 4. **Local/cloud failover** — proves the system recovers automatically if
    its primary Gemma backend becomes unreachable (skipped on a
    local-only machine, so a local demo never makes an unplanned cloud call).
@@ -230,34 +242,36 @@ here's what each one means, for reference:
 | `VerifiedClearance` | The independently re-derived post-maneuver separation, and whether it actually clears the threshold |
 | `budget_insufficient` | `True` if the maneuver was calculated but couldn't be afforded from the remaining delta-v budget — nothing executed |
 | `awaiting_human_approval` | `True` if the maneuver is calculated and affordable, but held pending a human decision (cloud backend only) |
-| `ManeuverApproval.mode` | `"autonomous"` (local, no human) or `"human"` (cloud, explicit approve/reject) |
+| `ManeuverApproval.mode` | `"autonomous"` (local, no human — may still be a Gemma veto) or `"human"` (cloud, explicit approve/reject) |
 | `GemmaProvenance.source` | `"gemma"` (real model output) or `"fallback"` (deterministic text — both backends were unreachable) |
+| `veto_provenance` | Provenance for Gemma's own GO/NO-GO maneuver veto-check (local path, CRITICAL only) — `None` when no veto check was attempted |
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 
 ## Summary
 
 - **Real data, real physics.** Live CelesTrak TLEs, Skyfield/SGP4
   propagation, a genuine two-pass closest-approach search — not mocked.
-- **Reliability where it matters.** Severity, action, maneuver math, and
-  budget enforcement are all deterministic; Gemma explains, it never
-  decides.
+- **Reliability where it matters.** Severity, action, and maneuver math are
+  100% deterministic — Gemma never computes or overrides them. The one
+  bounded exception is the local-path veto check, and even there Gemma can
+  only make an already-verified-safe maneuver *more* conservative, never
+  less.
 - **An honest autonomy story.** Local vs. cloud isn't just an
   infrastructure choice here — it's used deliberately to model whether a
-  human can actually be in the loop right now, with a real approval
-  workflow (not a rubber stamp) when they can.
+  human can actually be in the loop right now: a real Gemma-driven safety
+  review when they can't, a real human approval workflow (not a rubber
+  stamp) when they can.
 - **Nothing hidden.** Every decision, every provenance detail, every
-  approval or rejection is written to an append-only audit log that can
-  reconstruct exactly what happened and why, on its own, after the fact.
-- **Verified, not just built.** 73 automated tests, plus every major path
+  approval, veto, or rejection is written to an append-only audit log that
+  can reconstruct exactly what happened and why, on its own, after the fact.
+- **Verified, not just built.** 87 automated tests, plus every major path
   in this document has been run against real Ollama and a real hosted API
   key during development — not just asserted to work.
 
-**What's next:** giving Gemma a bounded, veto-only GO/NO-GO role on the
-autonomous (local) path — reviewing an already-verified-safe maneuver and
-standing in for the unavailable human, never computing the physics itself.
-Deliberately scoped for a later phase rather than rushed — see
-`KAGGLE_WRITEUP.md`'s "Future work" section and `PHASE_PROGRESS.md` Phase 9
-for the full design.
+**What's next:** ideas for further phases — screening the live CelesTrak
+catalog for real current conjunctions instead of a staged pair, a visual
+dashboard, historical replay against a real past close-approach event —
+are tracked in `PHASE_PROGRESS.md`, not yet committed to.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

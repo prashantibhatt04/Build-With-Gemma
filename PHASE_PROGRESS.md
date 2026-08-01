@@ -207,23 +207,61 @@ regressions.
 No other open issues found (checked for TODO/FIXME/XXX across src/,
 scripts/, tests/ - none). Suite: 73/73.
 
-## Phase 9 — Gemma as autonomous verifier (planned, not yet built)
-Status: deferred - discussed and scoped, explicitly held for a later phase
-Discussed whether Gemma should have real decision authority instead of
-only narrating. Ruled out: Gemma computing the maneuver itself (LLMs
-aren't reliable for precise numerical physics - would undermine the
-project's core reliability claim). Scoped instead: Gemma as a downstream
-VETO GATE for the autonomous (local/Ollama) path only - after the
-deterministic system independently verifies a maneuver is safe, Gemma
-gets the same numbers (distance, velocity, maneuver plan, verified
-clearance) and renders a real GO/NO-GO call standing in for the
-unavailable human, reusing the existing ManeuverApproval schema
-(mode="autonomous" would carry Gemma's actual verdict instead of a
-hardcoded True). Safe by construction: Gemma can only make the outcome
-MORE conservative (veto an already-verified-safe maneuver) never less -
-it never gets to approve something the physics hasn't already checked.
-Two fail-safe defaults agreed if/when this is built: an unparseable
-verdict defaults to NO-GO (escalate), and Gemma being unreachable falls
-back to today's physics-only autonomy (an LLM outage alone shouldn't
-block an already-verified-safe maneuver). Not implemented - current
-behavior (Gemma narrates only, never decides) is unchanged in this repo.
+## Phase 9 — Gemma as autonomous verifier (veto gate)
+Status: done
+Built exactly to the design scoped earlier in this file: on the
+autonomous (local/Ollama) path only, after compute_avoidance_maneuver +
+verify_maneuver independently confirm a CRITICAL maneuver is safe, Gemma
+now gets those same numbers and issues a real GO/NO-GO verdict via a new
+_maneuver_veto_check (src/pipeline.py), standing in for the unavailable
+human. Reuses the existing ManeuverApproval schema exactly as planned -
+mode="autonomous" now carries Gemma's actual verdict instead of a
+hardcoded True: approved=True/approved_by=None when Gemma affirms (or is
+unreachable - see fail-safe below); approved=False/approved_by="Gemma
+(autonomous safety review)" when Gemma explicitly vetoes or gives an
+unparseable answer. verified_clearance stays None whenever vetoed - same
+"nothing was actually applied" invariant as budget_insufficient/
+awaiting_human_approval - so a vetoed maneuver can never be mistaken for
+an executed one downstream. The two fail-safe defaults from the original
+design are both implemented and tested: an unparseable verdict defaults
+to NO-GO (escalate, not a free pass); Gemma being unreachable is NOT
+treated as a veto and falls back to physics-only autonomy (an LLM outage
+alone shouldn't block an already-verified-safe maneuver) - the response
+text guarantees this deterministically rather than relying on parsing.
+Verdict parsing (_parse_veto_verdict) scans the FULL response for
+GO/NO-GO tokens and takes the last one found, not just the last line -
+this deliberately does NOT reuse _extract_final_answer's "last
+substantive line" heuristic, since a short verdict token given first (as
+instructed) would get discarded by that heuristic in favor of a longer
+justification sentence after it; _call_gemma_with_provenance gained an
+optional postprocess param so the veto call can skip that extraction
+instead of duplicating the whole helper. _decision_rationale gained a
+4th CRITICAL branch (maneuver_vetoed) so Gemma's own narration call
+correctly says "Maneuver vetoed: blocked pending review" instead of
+falling through to the generic recommendation text. display.py now
+renders a vetoed maneuver under its own "MANEUVER VETOED - AUTONOMOUS
+SAFETY REVIEW" title, kept visually distinct from a human rejecting a
+cloud-pending proposal (same underlying "REJECTED" condition, different
+mode) - existing human-rejected test/text left untouched. Added
+veto_provenance (GemmaProvenance, nullable) to DecisionLogEntry/
+PipelineState for the same audit-trail parity as description/rationale
+provenance, threaded through make_log_node and run_once. scripts/
+run_demo.py's CRITICAL step explanation and summary counts updated -
+"autonomous" execution count is now correctly restricted to
+approved=True (a vetoed maneuver has mode="autonomous" but wasn't
+executed), and the summary separates "Vetoed by Gemma" from "Rejected by
+human" instead of lumping both into one count. Delta-v budget is NOT
+refunded when Gemma vetoes a maneuver it already consumed budget for -
+kept consistent with the pre-existing behavior for human rejection
+(budget is spent at proposal time regardless of outcome), not changed as
+part of this phase. 14 new tests (parsing edge cases, explicit NO-GO,
+unparseable-defaults-to-NO-GO, unreachable-fail-safe-GO via the existing
+FailingGemmaClient test strengthened with new assertions, GO-affirmed
+provenance, display panel distinction). Suite: 87/87. Verified live
+end-to-end against real local Ollama (gemma4:e4b) twice: once through the
+full analyze->decide pipeline (real GO verdict, maneuver executed,
+correct narration), and once calling the new vetoed-narration branch
+directly (real model output: "Maneuver vetoed: blocked pending review...")
+since a genuinely unsafe/vetoed maneuver essentially never occurs in
+normal operation by design, so the narration branch needed a targeted
+live check rather than relying on the pipeline to produce one naturally.

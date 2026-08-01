@@ -67,11 +67,21 @@ class ManeuverApproval(BaseModel):
 
     mode="autonomous": the configured Gemma backend is "ollama" (local) -
     in this system, local-only is used as a stand-in for "ground control is
-    currently unreachable" (e.g. communication blackout, light-delay), so
-    the maneuver is self-approved based purely on the deterministic
-    severity/physics checks already computed (maneuver_plan), with no
-    human in the loop. Gemma still only narrates this - it never decides
-    the maneuver itself.
+    currently unreachable" (e.g. communication blackout, light-delay). A
+    deterministic physics check independently verifies the maneuver is
+    safe first (see src/maneuver.py:verify_maneuver), then Gemma itself
+    gets those same numbers and issues a real GO/NO-GO verdict, standing
+    in for the unavailable human (see src/pipeline.py:_maneuver_veto_check).
+    Gemma can only make this MORE conservative than the physics check, never
+    less: approved=True means physics verified it safe AND Gemma affirmed
+    it (approved_by stays None - no human, autonomous by construction);
+    approved=False means Gemma vetoed an already-verified-safe maneuver, or
+    its response couldn't be parsed into a clear verdict (the fail-safe
+    default is NO-GO, not a free pass) - approved_by identifies Gemma as
+    the vetoing party in that case. Gemma being unreachable is NOT treated
+    as a veto: an LLM outage alone shouldn't block a maneuver the
+    deterministic physics has already verified safe, so that case falls
+    back to today's physics-only approval (approved=True, approved_by=None).
 
     mode="human": the configured backend is "api" (cloud) - a stand-in for
     "ground control is reachable" - so a real person must explicitly
@@ -127,6 +137,11 @@ class DecisionLogEntry(BaseModel):
     description_provenance: Optional[GemmaProvenance] = None
     # decide_node's Gemma call for decision.rationale. Always attempted.
     rationale_provenance: GemmaProvenance
+    # decide_node's Gemma veto-check call (see ManeuverApproval, mode=
+    # "autonomous") for a CRITICAL conjunction on the local/autonomous path.
+    # None whenever no veto check was attempted: non-CRITICAL, cloud/api
+    # backend (human approval instead), or budget-insufficient.
+    veto_provenance: Optional[GemmaProvenance] = None
     human_reviewed: bool = False
     human_reviewed_at: Optional[datetime] = None
     # Who performed the review that set human_reviewed - see

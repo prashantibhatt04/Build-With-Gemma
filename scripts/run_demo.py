@@ -258,14 +258,28 @@ def _step_summary(ctx: DemoContext) -> None:
     fallback_count = sum(1 for e in entries if e.rationale_provenance.source == "fallback")
     maneuvers_executed = sum(1 for e in entries if e.decision.verified_clearance is not None)
     maneuvers_blocked = sum(1 for e in entries if e.decision.budget_insufficient)
-    maneuvers_rejected = sum(
+    # Rejected maneuvers split by WHO rejected them - a Gemma veto (mode=
+    # "autonomous") is a different situation from a human rejecting a
+    # cloud-pending proposal (mode="human"), so they're reported separately
+    # rather than lumped into one "rejected" count (see display.py).
+    gemma_vetoed = sum(
         1 for e in entries
-        if e.decision.maneuver_approval is not None and not e.decision.maneuver_approval.approved
+        if e.decision.maneuver_approval is not None
+        and not e.decision.maneuver_approval.approved
+        and e.decision.maneuver_approval.mode == "autonomous"
+    )
+    human_rejected = sum(
+        1 for e in entries
+        if e.decision.maneuver_approval is not None
+        and not e.decision.maneuver_approval.approved
+        and e.decision.maneuver_approval.mode == "human"
     )
     still_pending = sum(1 for e in entries if e.decision.awaiting_human_approval)
     autonomous = sum(
         1 for e in entries
-        if e.decision.maneuver_approval is not None and e.decision.maneuver_approval.mode == "autonomous"
+        if e.decision.maneuver_approval is not None
+        and e.decision.maneuver_approval.mode == "autonomous"
+        and e.decision.maneuver_approval.approved
     )
     human_approved = sum(
         1 for e in entries
@@ -279,7 +293,8 @@ def _step_summary(ctx: DemoContext) -> None:
     )
     ctx.console.print(
         f"Maneuvers executed: {maneuvers_executed} (autonomous: {autonomous}, human-approved: {human_approved})  "
-        f"|  Blocked by budget: {maneuvers_blocked}  |  Rejected by human: {maneuvers_rejected}"
+        f"|  Blocked by budget: {maneuvers_blocked}  |  Vetoed by Gemma: {gemma_vetoed}  "
+        f"|  Rejected by human: {human_rejected}"
         + (f"  |  Still awaiting approval: {still_pending}" if still_pending else "")
     )
 
@@ -319,32 +334,37 @@ STEPS: list[Step] = [
         action=_step_live_orbital_data,
     ),
     Step(
-        phase="Phases 0-3, 5, 8",
-        title="CRITICAL conjunctions: maneuver, verification, budget, and human approval",
+        phase="Phases 0-3, 5, 8-9",
+        title="CRITICAL conjunctions: maneuver, verification, budget, and approval (human or Gemma)",
         explanation=(
             "Severity (NOMINAL/WATCH/WARNING/CRITICAL) and the resulting "
             "action are decided by a plain distance threshold, NOT by the "
-            "AI model - this needs to be reliable, so Gemma only ever "
-            "explains a decision that's already been made deterministically, "
-            "never makes it. Real orbital data rarely produces a CRITICAL "
-            "case (<5km predicted separation) on demand, so this step uses "
-            "4 synthetic CRITICAL-range conjunctions (clearly labeled as "
-            "synthetic in their source field) to demonstrate that path on "
-            "purpose. For each one, a simplified avoidance maneuver is "
-            "calculated deterministically. If the shared delta-v budget "
-            "(a stand-in for real spacecraft fuel limits) can't afford it, "
-            "the system says so plainly and escalates for review rather "
-            "than pretending to act - watch the last of the 4 events hit "
-            "this. Otherwise, what happens next depends on THIS MACHINE'S "
-            "configured Gemma backend, which this system treats as a proxy "
-            "for whether ground control is currently reachable: with a "
-            "LOCAL backend (Ollama), the maneuver is independently "
-            "re-verified and self-approved immediately - no human in the "
-            "loop, because a real probe often can't wait for one (light-"
-            "delay, communication blackout). With the CLOUD backend (a "
-            "hosted API), the maneuver is calculated but held pending - "
-            "ground control is reachable, so a human must explicitly "
-            "approve it below before it executes and gets verified."
+            "AI model - this needs to be reliable, so severity/action are "
+            "never Gemma's call. Real orbital data rarely produces a "
+            "CRITICAL case (<5km predicted separation) on demand, so this "
+            "step uses 4 synthetic CRITICAL-range conjunctions (clearly "
+            "labeled as synthetic in their source field) to demonstrate "
+            "that path on purpose. For each one, a simplified avoidance "
+            "maneuver is calculated deterministically. If the shared "
+            "delta-v budget (a stand-in for real spacecraft fuel limits) "
+            "can't afford it, the system says so plainly and escalates for "
+            "review rather than pretending to act - watch the last of the "
+            "4 events hit this. Otherwise, what happens next depends on "
+            "THIS MACHINE'S configured Gemma backend, which this system "
+            "treats as a proxy for whether ground control is currently "
+            "reachable: with a LOCAL backend (Ollama), the maneuver is "
+            "independently re-verified by deterministic physics, and THEN "
+            "Gemma itself gets those same numbers and issues a real "
+            "GO/NO-GO verdict - standing in for the unavailable human, "
+            "since a real probe often can't wait for one (light-delay, "
+            "communication blackout). Gemma can only make this MORE "
+            "conservative than the physics check, never less: it can veto "
+            "an already-verified-safe maneuver, but it never gets to "
+            "approve one the physics hasn't already cleared. With the "
+            "CLOUD backend (a hosted API), the maneuver is calculated but "
+            "held pending instead - ground control is reachable, so a real "
+            "human must explicitly approve it below before it executes and "
+            "gets verified."
         ),
         action=_step_critical_maneuver_and_budget,
     ),

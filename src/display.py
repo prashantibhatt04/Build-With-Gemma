@@ -27,8 +27,9 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
     """Prints one pipeline result as a single color-coded summary line,
     plus a visually distinct panel for whichever maneuver state applies:
     blocked by budget, awaiting human approval, executed (autonomous or
-    human-approved), or rejected by a human. See schemas.Decision /
-    schemas.ManeuverApproval for what drives each state."""
+    human-approved), vetoed by Gemma's autonomous safety review, or
+    rejected by a human. See schemas.Decision / schemas.ManeuverApproval
+    for what drives each state."""
     raw = entry.telemetry.raw_data
     badge = _severity_badge(entry.finding.severity)
 
@@ -80,6 +81,20 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title=title,
             title_align="left",
             border_style=border,
+        ))
+    elif approval is not None and not approval.approved and approval.mode == "autonomous":
+        # Gemma vetoed a maneuver that deterministic physics already
+        # verified as safe (see pipeline._maneuver_veto_check) - distinct
+        # from a human rejecting a cloud-pending proposal below, so it gets
+        # its own title/detail rather than reusing "MANEUVER REJECTED".
+        console.print(Panel(
+            f"Proposed maneuver ({plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s), "
+            "already independently verified safe by deterministic physics, was "
+            f"VETOED by {approval.approved_by} before execution.\n"
+            f"Reason: {approval.reason}",
+            title="MANEUVER VETOED — AUTONOMOUS SAFETY REVIEW",
+            title_align="left",
+            border_style="red",
         ))
     elif approval is not None and not approval.approved:
         console.print(Panel(

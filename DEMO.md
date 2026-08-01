@@ -12,6 +12,46 @@ the code that's already built (Phases 0-5).
 
 ---
 
+## Setup on a new machine
+
+`.env` (your real API key) and `.venv/` are both gitignored and never get
+pushed - `git log --all --full-history -- .env` on this repo returns
+nothing, confirming the key was never in history. On the new box, after
+`git clone` (or `git pull` if already cloned):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` on that machine and set `GEMMA_API_KEY=<your key>`.
+
+**Important:** if that machine won't have Ollama running, also change
+`GEMMA_BACKEND=ollama` to `GEMMA_BACKEND=api` in the same `.env` file. Local
+(`ollama`) stays the default - if you leave it as-is with no Ollama
+running, every Gemma call will still work (Phase 4's cross-backend
+fallback catches the failure and falls through to the cloud key
+automatically), but each call wastes a failed local attempt + retry first,
+adding latency to the whole demo. Setting `api` as primary skips that. If
+the new machine *does* have Ollama too and you just want cloud as a
+backup, leave `GEMMA_BACKEND=ollama` as-is.
+
+Confirm the environment is sound before running anything else:
+
+```bash
+python -m pytest -v
+```
+
+All 48 tests should pass - they're fully mocked, no network or Ollama
+required, so this works identically on any machine with the deps
+installed. Then continue with Stage 0 below, which is the first command
+that actually depends on which Gemma backend is configured.
+
+---
+
 ## Stage 0 — Is Gemma actually reachable?
 
 ```bash

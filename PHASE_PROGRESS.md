@@ -188,3 +188,21 @@ execution", and (after the display fix) the full run completes without
 crashing through to the summary. 6 new tests total across
 test_pipeline_smoke.py/test_logging_utils.py/test_display.py. Suite:
 71/71.
+FOLLOW-UP after user feedback + open-issue review:
+1) scripts/run_demo.py's failover step (Step 4) always deliberately broke
+local Ollama and made a real cloud call, regardless of the demo's
+configured backend - meaning a LOCAL-only demo run was silently touching
+the cloud. Fixed: that step now skips entirely (with an explanation
+printed, not silent) whenever GEMMA_BACKEND=ollama. Verified with a fresh
+full local run: step correctly skipped, rest of the 8-step walkthrough
+unaffected, summary unchanged (3 autonomous, 1 budget-blocked).
+2) Resolved the previously-flagged "Ok, let's go."-style extraction bug:
+_extract_final_answer now searches backward for the last line that's
+actually substantive (>= 20 chars) instead of blindly taking the literal
+last line, so a short throwaway remark after the real answer no longer
+gets selected instead of it. 2 new tests, including one reproducing the
+exact real failure pattern. Re-verified against 5 fresh real cloud calls -
+all returned clean, substantive rationale text (135-162 chars), no
+regressions.
+No other open issues found (checked for TODO/FIXME/XXX across src/,
+scripts/, tests/ - none). Suite: 73/73.

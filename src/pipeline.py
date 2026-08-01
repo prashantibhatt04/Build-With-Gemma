@@ -63,6 +63,13 @@ def _describe_model_used(client: GemmaClient) -> str:
     return model_name
 
 
+# Below this length, a final line is treated as a throwaway remark (e.g.
+# "Ok, let's go.", "Understood.") rather than real content - see
+# _extract_final_answer. A real one-sentence rationale/description is
+# consistently well over this in practice.
+_MIN_SUBSTANTIVE_LINE_LENGTH = 20
+
+
 def _extract_final_answer(text: str) -> str:
     """Some backends/models respond with their full reasoning trace before
     the actual answer - draft attempts, self-checklists, "wait, let me
@@ -71,12 +78,20 @@ def _extract_final_answer(text: str) -> str:
     cleanly). The formatting of that reasoning isn't consistent (sometimes
     blank-line-separated paragraphs, sometimes a label and the answer on
     consecutive single-newline-separated lines), but in every case observed,
-    the real answer ends up as the LAST non-empty line of the response - so
-    that's what this takes, regardless of which backend produced the text.
-    For an already-clean single-line response (the normal Ollama case), this
-    is a no-op - there's only one line to return."""
+    the real answer ends up as one of the LAST non-empty lines of the
+    response. Occasionally the model's literal last line is a short
+    throwaway remark instead (e.g. "Ok, let's go.") with the real answer one
+    line above it - so this searches backward for the last line that's
+    actually substantive, not just the literal last line. For an
+    already-clean single-line response (the normal Ollama case), this is a
+    no-op - there's only one line to consider."""
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    return lines[-1] if lines else text.strip()
+    if not lines:
+        return text.strip()
+    for line in reversed(lines):
+        if len(line) >= _MIN_SUBSTANTIVE_LINE_LENGTH:
+            return line
+    return lines[-1]  # nothing met the bar - literal last line is the best we have
 
 
 def _call_gemma_with_provenance(

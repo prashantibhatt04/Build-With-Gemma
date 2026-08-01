@@ -173,6 +173,19 @@ def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
 
 
 def _step_failover(ctx: DemoContext) -> None:
+    if settings.gemma_backend == "ollama":
+        # This machine is configured for a LOCAL-only demo - deliberately
+        # breaking Ollama here would make a real call out to the cloud
+        # backend, which defeats the point of a local-only run. Skip
+        # rather than silently touch the network anyway.
+        ctx.console.print(
+            "[dim]Skipped - this run is configured for local-only (Ollama). "
+            "Demonstrating this step here would require a real call to the "
+            "cloud backend, which a local-only demo should never do. Run "
+            "with GEMMA_BACKEND=api configured to see this step.[/dim]"
+        )
+        return
+
     broken = Settings(
         gemma_backend="ollama", gemma_model=settings.gemma_model,
         ollama_host="http://localhost:1",  # intentionally unreachable
@@ -348,7 +361,10 @@ STEPS: list[Step] = [
             "actually ended up answering. In the real pipeline this is "
             "recorded in the audit log for every decision (see two steps "
             "from now) - so it's always visible which backend produced a "
-            "given explanation, never hidden."
+            "given explanation, never hidden. SKIPPED when this machine is "
+            "configured local-only (GEMMA_BACKEND=ollama) - a local-only "
+            "demo should never make a real call to the cloud, even to "
+            "prove a fallback path exists."
         ),
         action=_step_failover,
     ),

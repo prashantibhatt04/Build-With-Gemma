@@ -59,6 +59,28 @@ def test_extract_final_answer_handles_empty_string():
     assert _extract_final_answer("   ") == ""
 
 
+def test_extract_final_answer_skips_short_throwaway_final_line():
+    # Real bug observed in production: the model's literal last line was a
+    # short filler remark ("Ok, let's go.") instead of the real content,
+    # which sat on the line just above it.
+    verbose = (
+        "The user wants a single-word reply: \"ok\".\n\n"
+        "Recommendation: continue. The projected minimum distance of 50,000 "
+        "kilometers between the objects is sufficient to maintain a safe margin.\n\n"
+        "Ok, let's go."
+    )
+    assert _extract_final_answer(verbose) == (
+        "Recommendation: continue. The projected minimum distance of 50,000 "
+        "kilometers between the objects is sufficient to maintain a safe margin."
+    )
+
+
+def test_extract_final_answer_falls_back_to_last_line_if_nothing_substantive():
+    # Degenerate case: every line is short - fall back to the literal last
+    # line rather than returning nothing.
+    assert _extract_final_answer("Ok.\nSure.\nYes.") == "Yes."
+
+
 class FakeGemmaClient:
     """Duck-types GemmaClient (generate() + settings.gemma_model/
     gemma_backend) without making any network calls. gemma_backend defaults

@@ -50,19 +50,67 @@ phase and why.
 
 ## Setup
 
+### Prerequisites
+
+- Python 3.10+ (developed against 3.14)
+- [git](https://git-scm.com/)
+- Either [Ollama](https://ollama.com) (for a fully local setup) or a
+  hosted Gemini-style API key (for the cloud path) — see below, you don't
+  need both
+
+### 1. Clone and install
+
 ```bash
+git clone https://github.com/prashantibhatt04/Build-With-Gemma.git
+cd Build-With-Gemma
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env`: `GEMMA_BACKEND=ollama` (local) or `api` (hosted). For the
-hosted backend, set `GEMMA_API_KEY` and `GEMMA_MODEL_API` (Ollama tags and
-hosted model ids use different naming schemes — check which models your
-key actually has access to). `DELTA_V_BUDGET_M_S` controls how many
-CRITICAL maneuvers can execute before the system starts explicitly
-flagging "insufficient budget" instead of silently continuing.
+### 2. Configure Gemma access
+
+`.env` is gitignored — it's created locally from `.env.example` and never
+committed. Pick one (or set up both and switch via `GEMMA_BACKEND`):
+
+**Option A — Local, via Ollama (no API key, no cost, works offline):**
+
+1. Install Ollama: [ollama.com/download](https://ollama.com/download)
+2. Pull the model this project uses:
+   ```bash
+   ollama pull gemma4:e4b
+   ```
+3. Confirm it's running (Ollama typically starts automatically after
+   install; if not, `ollama serve`). Default is `http://localhost:11434`,
+   matching `OLLAMA_HOST` in `.env.example`.
+4. In `.env`: `GEMMA_BACKEND=ollama`, `GEMMA_MODEL=gemma4:e4b` (already the
+   defaults).
+
+**Option B — Cloud, via a hosted Gemini-style API key:**
+
+1. Generate a free API key at
+   [Google AI Studio](https://aistudio.google.com/apikey).
+2. In `.env`: `GEMMA_BACKEND=api`, `GEMMA_API_KEY=<your key>`.
+3. Ollama tags (e.g. `gemma4:e4b`) and hosted model ids use **different
+   naming schemes** — they're not interchangeable. Check which Gemma
+   models your key actually has access to:
+   ```bash
+   curl -H "x-goog-api-key: $GEMMA_API_KEY" \
+     https://generativelanguage.googleapis.com/v1beta/models | grep -i gemma
+   ```
+   Set `GEMMA_MODEL_API` to one of the returned model ids (e.g.
+   `gemma-4-26b-a4b-it`).
+
+`DELTA_V_BUDGET_M_S` controls how many CRITICAL maneuvers can execute
+before the system starts explicitly flagging "insufficient budget"
+instead of silently continuing — the default (5.0) is fine to start with.
+
+**Security note:** never commit `.env`, never `cat`/`echo`/`print` it or
+your API key on screen (including during recordings or screenshots), and
+never paste a real key into a terminal you're recording. This project's
+own code never prints the raw key anywhere — the only way it leaks is if
+someone does so manually.
 
 ## Run the demo
 
@@ -93,3 +141,21 @@ python scripts/check_gemma.py          # connectivity check for the configured b
 python scripts/mark_reviewed.py <event_id> <name>              # post-hoc human review
 python scripts/approve_maneuver.py <event_id> <name> [--reject]  # resolve a pending maneuver
 ```
+
+## Links & references
+
+- [Ollama](https://ollama.com) — local model runtime ([download](https://ollama.com/download), [model library](https://ollama.com/library))
+- [Google AI Studio](https://aistudio.google.com/apikey) — generate a hosted Gemini-style API key
+- [Generative Language API docs](https://ai.google.dev/gemini-api/docs) — hosted API reference (models list, request/response format)
+- [CelesTrak](https://celestrak.org) — source of live TLE (satellite/debris tracking) data
+- [Skyfield](https://rhodesmill.org/skyfield/) — orbital mechanics / SGP4 propagation library used here
+- [LangGraph](https://langchain-ai.github.io/langgraph/) — pipeline orchestration
+- [Pydantic](https://docs.pydantic.dev/) — schema validation
+- [Rich](https://rich.readthedocs.io/) — terminal rendering
+
+## More documentation
+
+- [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) — problem statement, architecture diagrams, field glossary
+- [`DEMO.md`](DEMO.md) — full stage-by-stage walkthrough with copy-pasteable commands
+- [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) — complete build history, phase by phase
+- [`KAGGLE_WRITEUP.md`](KAGGLE_WRITEUP.md) — submission writeup (architecture, Gemma usage, engineering hurdles, design choices)

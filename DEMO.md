@@ -68,9 +68,14 @@ It pauses before each step, prints a plain-language explanation of what
 that step demonstrates and why, then waits for you to press Enter (or
 type `n` to skip that step) before running it. Covers: a preflight check
 (config, log directory, real Gemma connectivity), a live CelesTrak scan,
-the synthetic CRITICAL/budget-depletion scenario, a live local/cloud
-failover proof, marking a decision human-reviewed, reading back the raw
-audit log entry, running the test suite, and a summary table.
+the synthetic CRITICAL/budget-depletion/human-approval scenario (which of
+the two - autonomous local execution vs. cloud proposal awaiting your
+live approve/reject - depends entirely on this machine's `GEMMA_BACKEND`),
+a local/cloud failover proof (**skipped** on a local-only machine -
+`GEMMA_BACKEND=ollama` - since demonstrating it would require a real
+cloud call, which a local-only demo should never make), marking a
+decision human-reviewed, reading back the raw audit log entry, running
+the test suite, and a summary table.
 
 For a non-interactive run (CI / quick smoke-testing, no pauses):
 

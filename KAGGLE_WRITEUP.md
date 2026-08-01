@@ -44,8 +44,17 @@ log_node — append-only JSON-lines audit log (every decision, its
 Built on **LangGraph** for the `analyze -> decide -> log` pipeline,
 **Pydantic** for schema validation throughout, **Skyfield/SGP4** for real
 orbital mechanics, and a backend-agnostic **GemmaClient** that talks to
-either a local Ollama instance or a hosted Gemini-style API through the
-same interface, with automatic failover between them.
+either a local Ollama instance (`gemma4:e4b`) or a hosted Gemini-style API
+(`gemma-4-26b-a4b-it`) through the same interface, with automatic failover
+between them.
+
+Key modules: `src/orbital.py` (TLE parsing, closest-approach search),
+`src/maneuver.py` (maneuver math, independent verification, delta-v
+budget), `src/gemma_client.py` (backend-agnostic Gemma access + failover),
+`src/pipeline.py` (the LangGraph nodes), `src/logging_utils.py` (audit
+log, human-review, and maneuver-approval workflows), `src/display.py`
+(terminal rendering), `src/preflight.py` (environment health checks), and
+`scripts/run_demo.py` (the guided end-to-end demo).
 
 ## How Gemma was used
 
@@ -61,11 +70,17 @@ Gemma is used exclusively as an **explainer**, never as a decision-maker:
   approval* narrated as not-yet-executed, or a maneuver that couldn't be
   afforded, escalated for review. Gemma is explicitly instructed never to
   hedge on, second-guess, or contradict the severity/action it's given.
-- **Cross-backend by design**: the same prompts run against either a local
-  Ollama model or a hosted API model, chosen by a `GEMMA_BACKEND` env var.
-  If the configured backend fails, `GemmaClient` automatically retries,
-  then falls over to the other backend, and every log entry records which
-  backend actually produced a given explanation — never silently hidden.
+- **Cross-backend by design, with three tiers of resilience**: the same
+  prompts run against either the local Ollama model (`gemma4:e4b`) or the
+  hosted API model (`gemma-4-26b-a4b-it`), chosen by a `GEMMA_BACKEND` env
+  var. A single call first retries once on the same backend (transient
+  hiccups shouldn't force escalation); if that still fails, `GemmaClient`
+  fails over to the *other* backend and retries there; if both are
+  unreachable, the pipeline falls through to a deterministic templated
+  sentence with no AI involved, so a finding is never silently dropped.
+  Every log entry records exactly which tier actually produced the text
+  (`GemmaProvenance.source`: `"gemma"` or `"fallback"`, plus `model_used`
+  naming the real backend/model that responded) — never silently hidden.
 - **A deliberate product decision, not just infrastructure**: which
   backend is configured is used as a stand-in for whether ground control
   is currently reachable. Local (Ollama) -> the system self-approves a
@@ -124,6 +139,19 @@ Fixed by rewriting the renderer to explicitly handle every real state
 human-approved-executed / rejected) instead of assuming only two, with
 regression tests added for the exact failure.
 
+**Repeated demo runs silently updated the wrong log entry.** The guided
+demo script used a fixed, hardcoded event id for its synthetic scenario
+(`conj-run-demo-0`, `-1`, etc.). The audit log's `mark_reviewed`/
+`approve_maneuver` operations match an entry by its first occurrence of a
+given event id — so on a *second* run of the demo, marking "this run's"
+event as reviewed silently updated a stale entry from an *earlier* run
+instead, while the entry that was actually just created stayed untouched.
+Not caught by unit tests (each test uses an isolated temp directory with
+no repeat-run collisions); only surfaced by actually running the demo
+multiple times in a row, the way a presenter rehearsing for a live demo
+naturally would. Fixed by including a per-run unique id in the synthetic
+event ids, and re-verified correct across three consecutive real runs.
+
 ## Design choices
 
 - **Severity, action, and maneuver physics are 100% deterministic
@@ -145,6 +173,13 @@ regression tests added for the exact failure.
   deterministic fallback, which backend, and - for CRITICAL cases -
   whether a maneuver was autonomous, human-approved, rejected, or blocked)
   for every single event, reconstructable independently of this system.
+- **Confidence is a real signal, not a hardcoded placeholder.** Early on,
+  `AnomalyFinding.confidence` was a flat constant everywhere. It's now
+  derived from how stale the underlying TLE tracking data actually is
+  (epoch age), with a clearly-labeled placeholder used only for telemetry
+  shapes that genuinely have no real signal to derive it from - honest
+  about what's real and what isn't, rather than a number that only looks
+  computed.
 
 ## Future work: Gemma as an autonomous verifier
 

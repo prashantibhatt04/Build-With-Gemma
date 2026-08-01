@@ -2,6 +2,12 @@
 
 *Track 2 submission — Build with Gemma: Triage in Light Speed*
 
+**Built with:** Python, [LangGraph](https://langchain-ai.github.io/langgraph/)
+(pipeline orchestration), [Pydantic](https://docs.pydantic.dev/) (schema
+validation), [Skyfield](https://rhodesmill.org/skyfield/)/SGP4 (real orbital
+mechanics), [Ollama](https://ollama.com) (local Gemma) and a hosted
+Gemini-style API (cloud Gemma), [Rich](https://rich.readthedocs.io/) (terminal UI).
+
 ## The problem
 
 Low Earth orbit is getting crowded. Thousands of tracked objects — active
@@ -70,10 +76,21 @@ raw numbers into a plain-language summary a person can actually read.
 For a CRITICAL conjunction specifically, a simplified avoidance maneuver
 (direction + delta-v) is computed deterministically, then **independently
 re-verified** by re-deriving the resulting clearance forward from that
-delta-v — not just trusting the number it was solved for. A limited
-delta-v budget (a stand-in for real spacecraft fuel limits) is checked
-before anything executes; if a maneuver would exceed what's left, the
-system says so explicitly instead of silently continuing to act.
+delta-v — not just trusting the number it was solved for.
+
+**Why there's a delta-v budget.** A real spacecraft doesn't have
+unlimited fuel — it can't fire an avoidance maneuver every time one is
+merely convenient. `DeltaVBudgetTracker` (`src/maneuver.py`) tracks a
+starting delta-v allowance (`DELTA_V_BUDGET_M_S`, default 5.0 m/s) that
+decrements every time a maneuver actually executes; when it can't cover a
+new maneuver, `budget_insufficient` gets set to `True`. When a CRITICAL
+maneuver can't be afforded, the system doesn't pretend to
+have infinite fuel, and it doesn't fail silently either — the maneuver
+plan stays visible (so a human can see what *would've* been needed),
+`verified_clearance` stays empty (nothing was actually applied), and
+Gemma's explanation says plainly that the maneuver was calculated but not
+executed, and escalates for review. Failing transparently, not silently
+or dishonestly, is the whole point.
 
 ## Two decision paths: local autonomy vs. cloud-gated approval
 
@@ -142,6 +159,37 @@ fallback, which backend produced it, and (for CRITICAL cases) whether the
 maneuver was autonomous, human-approved, rejected, or blocked by budget.
 Nothing about *how* a decision was reached is hidden after the fact.
 
+## Reliability layers: retry, failover, fallback, and review
+
+Two more safety nets exist independently of the local/cloud approval
+split above — worth calling out explicitly since they're easy to
+conflate with it or with each other.
+
+**Getting an explanation out of Gemma, in three tiers.** A single Gemma
+call first retries once on the *same* backend (a transient hiccup
+shouldn't force an immediate escalation). If that still fails,
+`GemmaClient` **fails over** to the *other* configured backend (local ↔
+cloud) and retries there. If *both* backends are unreachable, the
+pipeline falls through to a **deterministic fallback** — a plain
+templated sentence with no AI involved at all — so a finding or decision
+is never silently dropped just because Gemma happens to be down. Every
+logged entry records exactly which of these actually happened
+(`GemmaProvenance.source`: `"gemma"` or `"fallback"`, plus `model_used`
+naming the real backend/model that responded, even when it wasn't the one
+originally configured).
+
+**Two different kinds of "human," not one.** `human_reviewed` /
+`reviewed_by` is a **post-hoc audit sign-off** — it can be applied to
+*any* logged decision, at any time, after the fact (`scripts/mark_reviewed.py`).
+It doesn't block or gate anything; it just records that a person looked
+at it. `maneuver_approval` / `awaiting_human_approval` is a completely
+different mechanism — a **pre-execution gate** that exists only for
+CRITICAL maneuvers on the cloud backend, and actively prevents
+`verify_maneuver()` from ever running until a person explicitly approves
+or rejects it (`scripts/approve_maneuver.py`). A single decision can carry
+both, neither, or just one of these — they're independent, and only one
+of them (approval) can stop an action from happening.
+
 ## What the demo shows, step by step
 
 `python scripts/run_demo.py` walks through all of this live, self-explained,
@@ -167,6 +215,24 @@ in order:
 8. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
    maneuvers executed (autonomous vs. human-approved) vs. blocked vs.
    rejected.
+
+## Field glossary
+
+The diagrams and audit log above use exact field names from the code —
+here's what each one means, for reference:
+
+| Field | Meaning |
+|---|---|
+| `Severity` | `nominal` / `watch` / `warning` / `critical` — deterministic, from distance thresholds |
+| `Action` | `continue` / `hold` / `abort` — deterministic, mapped 1:1 from severity |
+| `AnomalyFinding.confidence` | 0–1, derived from how stale the TLE tracking data is |
+| `ManeuverPlan` | The deterministically computed direction + delta-v for a CRITICAL conjunction |
+| `VerifiedClearance` | The independently re-derived post-maneuver separation, and whether it actually clears the threshold |
+| `budget_insufficient` | `True` if the maneuver was calculated but couldn't be afforded from the remaining delta-v budget — nothing executed |
+| `awaiting_human_approval` | `True` if the maneuver is calculated and affordable, but held pending a human decision (cloud backend only) |
+| `ManeuverApproval.mode` | `"autonomous"` (local, no human) or `"human"` (cloud, explicit approve/reject) |
+| `GemmaProvenance.source` | `"gemma"` (real model output) or `"fallback"` (deterministic text — both backends were unreachable) |
+| `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 
 ## Summary
 

@@ -252,6 +252,13 @@ here's what each one means, for reference:
   in this document has been run against real Ollama and a real hosted API
   key during development — not just asserted to work.
 
+**What's next:** giving Gemma a bounded, veto-only GO/NO-GO role on the
+autonomous (local) path — reviewing an already-verified-safe maneuver and
+standing in for the unavailable human, never computing the physics itself.
+Deliberately scoped for a later phase rather than rushed — see
+`KAGGLE_WRITEUP.md`'s "Future work" section and `PHASE_PROGRESS.md` Phase 9
+for the full design.
+
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build
 history.

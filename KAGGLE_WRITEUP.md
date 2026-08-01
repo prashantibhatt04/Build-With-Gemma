@@ -146,6 +146,29 @@ regression tests added for the exact failure.
   whether a maneuver was autonomous, human-approved, rejected, or blocked)
   for every single event, reconstructable independently of this system.
 
+## Future work: Gemma as an autonomous verifier
+
+Right now Gemma exclusively narrates decisions the deterministic system
+has already made - a deliberate choice for this submission, not a
+limitation we didn't consider. The next natural step is giving Gemma a
+*bounded* decision role for the local (no-human-available) path
+specifically: after the deterministic system independently verifies a
+maneuver is safe, Gemma would review the same numbers (distance,
+velocity, the computed plan, the verified clearance) and render an actual
+GO/NO-GO verdict standing in for the unavailable human - reusing the
+`ManeuverApproval` schema already built for the human-approval path, just
+with Gemma as the approver instead of a person.
+
+The reason this is scoped for later rather than built now: it has to be
+designed so Gemma can only make the outcome *more* conservative (veto an
+already-verified-safe maneuver) and never less - it should never get to
+approve something the physics hasn't already checked, and never compute
+the physics itself (LLMs aren't reliable for precise numerical
+calculation, which would undermine the reliability this whole system is
+built around). Getting the fail-safe defaults right - what happens on an
+ambiguous verdict, or if Gemma itself is unreachable - matters more than
+shipping it quickly. See `PHASE_PROGRESS.md` Phase 9 for the full design.
+
 ## Verification
 
 73 automated tests (network-free, Gemma calls mocked) cover orbital math,

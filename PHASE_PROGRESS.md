@@ -206,3 +206,24 @@ all returned clean, substantive rationale text (135-162 chars), no
 regressions.
 No other open issues found (checked for TODO/FIXME/XXX across src/,
 scripts/, tests/ - none). Suite: 73/73.
+
+## Phase 9 — Gemma as autonomous verifier (planned, not yet built)
+Status: deferred - discussed and scoped, explicitly held for a later phase
+Discussed whether Gemma should have real decision authority instead of
+only narrating. Ruled out: Gemma computing the maneuver itself (LLMs
+aren't reliable for precise numerical physics - would undermine the
+project's core reliability claim). Scoped instead: Gemma as a downstream
+VETO GATE for the autonomous (local/Ollama) path only - after the
+deterministic system independently verifies a maneuver is safe, Gemma
+gets the same numbers (distance, velocity, maneuver plan, verified
+clearance) and renders a real GO/NO-GO call standing in for the
+unavailable human, reusing the existing ManeuverApproval schema
+(mode="autonomous" would carry Gemma's actual verdict instead of a
+hardcoded True). Safe by construction: Gemma can only make the outcome
+MORE conservative (veto an already-verified-safe maneuver) never less -
+it never gets to approve something the physics hasn't already checked.
+Two fail-safe defaults agreed if/when this is built: an unparseable
+verdict defaults to NO-GO (escalate), and Gemma being unreachable falls
+back to today's physics-only autonomy (an LLM outage alone shouldn't
+block an already-verified-safe maneuver). Not implemented - current
+behavior (Gemma narrates only, never decides) is unchanged in this repo.

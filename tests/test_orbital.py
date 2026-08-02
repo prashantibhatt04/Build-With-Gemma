@@ -7,7 +7,15 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 from skyfield.api import EarthSatellite, load
 
-from src.orbital import find_closest_approach, parse_norad_id, parse_tle_epoch
+from src.orbital import (
+    build_coarse_times,
+    coarse_min_distance,
+    compute_coarse_positions,
+    find_closest_approach,
+    parse_norad_id,
+    parse_tle_epoch,
+    refine_closest_approach,
+)
 
 # Real ISS (ZARYA) TLE line 1, used as a fixed sample - not fetched live.
 SAMPLE_TLE_LINE1 = "1 25544U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998"
@@ -69,3 +77,41 @@ def test_find_closest_approach_sane_result_and_refines_coarse_estimate():
     # the coarse pass alone - this proves the fine pass is actually
     # tightening the estimate, not just echoing the coarse result.
     assert result["min_distance_km"] <= coarse_only
+
+
+def test_build_coarse_times_is_deterministic_and_spans_the_window():
+    start_time = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    times = build_coarse_times(start_time, hours=48, coarse_step_minutes=5)
+
+    assert times[0] == start_time
+    assert times[-1] == start_time + timedelta(hours=48)
+    assert times == build_coarse_times(start_time, hours=48, coarse_step_minutes=5)
+
+
+def test_decomposed_coarse_plus_refine_matches_find_closest_approach():
+    """Phase 10: CelesTrakAdapter screens many pairs by calling
+    compute_coarse_positions/coarse_min_distance/refine_closest_approach
+    directly (to cache coarse positions across pairs) instead of
+    find_closest_approach's per-pair convenience path. Confirms doing it
+    manually, piece by piece, produces the exact same result as the
+    all-in-one function - the decomposition didn't change the math."""
+    ts = load.timescale()
+    sat_a = EarthSatellite(VANGUARD1_LINE1, VANGUARD1_LINE2, "VANGUARD 1", ts)
+    sat_b = EarthSatellite(ISS_LINE1, ISS_LINE2, "ISS (ZARYA)", ts)
+    start_time = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    expected = find_closest_approach(
+        sat_a, sat_b, ts, start_time, hours=48, coarse_step_minutes=5, fine_step_seconds=10,
+    )
+
+    coarse_times = build_coarse_times(start_time, hours=48, coarse_step_minutes=5)
+    positions_a = compute_coarse_positions(sat_a, ts, coarse_times)
+    positions_b = compute_coarse_positions(sat_b, ts, coarse_times)
+    coarse_dist, coarse_idx = coarse_min_distance(positions_a, positions_b)
+    result = refine_closest_approach(
+        sat_a, sat_b, ts, coarse_times[coarse_idx], coarse_step_minutes=5, fine_step_seconds=10,
+    )
+
+    assert result == expected
+    # The coarse pass is only ever an upper bound (see module docstring).
+    assert coarse_dist >= result["min_distance_km"]

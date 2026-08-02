@@ -53,29 +53,52 @@ def _closest_in_window(
     return float(dist_km[min_idx]), min_idx, geo_a.velocity.km_per_s, geo_b.velocity.km_per_s
 
 
-def find_closest_approach(
+def build_coarse_times(start_time: datetime, hours: int, coarse_step_minutes: int) -> list[datetime]:
+    """The coarse pass's sample times - a pure function of (start_time,
+    hours, coarse_step_minutes) so a caller screening many pairs over the
+    same window (see CelesTrakAdapter) can build this once and reuse it for
+    every satellite, rather than each pair recomputing an identical list."""
+    n_coarse_steps = int(hours * 60 / coarse_step_minutes) + 1
+    return [start_time + timedelta(minutes=coarse_step_minutes * i) for i in range(n_coarse_steps)]
+
+
+def compute_coarse_positions(sat: EarthSatellite, ts: Timescale, coarse_times: list[datetime]) -> np.ndarray:
+    """Position (km, shape (3, len(coarse_times))) for one satellite at each
+    coarse time. This is the expensive part of screening many pairs - a
+    vectorized SGP4 propagation - so a caller screening a whole pool of
+    satellites should call this ONCE per satellite (see
+    CelesTrakAdapter._rank_conjunctions) and reuse the result across every
+    pair that satellite appears in, instead of find_closest_approach's
+    per-pair default of recomputing it independently for every pair."""
+    t = ts.from_datetimes(coarse_times)
+    return sat.at(t).position.km
+
+
+def coarse_min_distance(positions_a: np.ndarray, positions_b: np.ndarray) -> tuple[float, int]:
+    """min distance (km) and its index, from two precomputed coarse position
+    arrays (see compute_coarse_positions) - pure numpy, no further
+    propagation. Like any coarse-pass result, this is only an UPPER BOUND
+    on the true closest approach (see module docstring); ranking many pairs
+    by this is a cheap, sound way to pick which ones are worth refining."""
+    diff_km = positions_a - positions_b
+    dist_km = np.sqrt((diff_km ** 2).sum(axis=0))
+    min_idx = int(np.argmin(dist_km))
+    return float(dist_km[min_idx]), min_idx
+
+
+def refine_closest_approach(
     sat_a: EarthSatellite,
     sat_b: EarthSatellite,
     ts: Timescale,
-    start_time: datetime,
-    hours: int = 48,
+    coarse_min_time: datetime,
     coarse_step_minutes: int = 5,
     fine_step_seconds: int = 10,
 ) -> dict:
-    """Two-pass search for the closest approach between two satellites.
-
-    Pass 1 (coarse): sample the full lookahead window at
-    coarse_step_minutes to find an approximate minimum.
-    Pass 2 (fine): sample a +/- coarse_step_minutes window around that
-    approximate minimum at fine_step_seconds to refine it.
-    """
-    n_coarse_steps = int(hours * 60 / coarse_step_minutes) + 1
-    coarse_times = [
-        start_time + timedelta(minutes=coarse_step_minutes * i) for i in range(n_coarse_steps)
-    ]
-    _, coarse_min_idx, _, _ = _closest_in_window(sat_a, sat_b, ts, coarse_times)
-    coarse_min_time = coarse_times[coarse_min_idx]
-
+    """Pass 2 of the two-pass search: given an already-known approximate
+    closest-approach time (from a coarse pass - see coarse_min_distance),
+    refines it into a precise minimum distance, time, and relative
+    velocity by sampling a narrow +/- coarse_step_minutes window around it
+    at fine_step_seconds."""
     fine_window = timedelta(minutes=coarse_step_minutes)
     fine_start = coarse_min_time - fine_window
     n_fine_steps = int((2 * fine_window).total_seconds() / fine_step_seconds) + 1
@@ -94,3 +117,38 @@ def find_closest_approach(
         "time_of_closest_approach": time_of_closest_approach,
         "relative_velocity_km_s": relative_velocity_km_s,
     }
+
+
+def find_closest_approach(
+    sat_a: EarthSatellite,
+    sat_b: EarthSatellite,
+    ts: Timescale,
+    start_time: datetime,
+    hours: int = 48,
+    coarse_step_minutes: int = 5,
+    fine_step_seconds: int = 10,
+) -> dict:
+    """Two-pass search for the closest approach between two satellites.
+
+    Pass 1 (coarse): sample the full lookahead window at
+    coarse_step_minutes to find an approximate minimum.
+    Pass 2 (fine): sample a +/- coarse_step_minutes window around that
+    approximate minimum at fine_step_seconds to refine it.
+
+    Convenience wrapper for a single pair - computes its own coarse
+    positions internally, from scratch. Screening many pairs against a
+    shared satellite pool (see CelesTrakAdapter._rank_conjunctions) should
+    instead call compute_coarse_positions once per satellite and
+    refine_closest_approach only for the most promising pairs - repeating
+    this function's per-pair coarse propagation does not scale past a few
+    dozen objects (O(pairs), not O(satellites)).
+    """
+    coarse_times = build_coarse_times(start_time, hours, coarse_step_minutes)
+    positions_a = compute_coarse_positions(sat_a, ts, coarse_times)
+    positions_b = compute_coarse_positions(sat_b, ts, coarse_times)
+    _, coarse_min_idx = coarse_min_distance(positions_a, positions_b)
+    coarse_min_time = coarse_times[coarse_min_idx]
+
+    return refine_closest_approach(
+        sat_a, sat_b, ts, coarse_min_time, coarse_step_minutes, fine_step_seconds,
+    )

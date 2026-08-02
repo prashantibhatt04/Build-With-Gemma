@@ -36,12 +36,29 @@ autonomous action, or clearly propose one and wait for a human.
 ### The data
 
 Real satellite/debris tracking data (TLEs — Two-Line Elements) is fetched
-live from [CelesTrak](https://celestrak.org), currently sampling the
-`cosmos-2251-debris` group — real fragments from the 2009 Cosmos
-2251/Iridium 33 collision, one of the largest debris-generating events in
-orbit. Nothing here is synthetic data dressed up as real; the WATCH/NOMINAL
-conjunctions you'll see in a demo run are genuine predictions against
-objects that are actually up there right now.
+live from [CelesTrak](https://celestrak.org), by default from two real,
+meaningfully different groups screened **against each other**: `stations`
+(real crewed stations — ISS, Tiangong, ...) and `cosmos-2251-debris`
+(real fragments from the 2009 Cosmos 2251/Iridium 33 collision, one of
+the largest debris-generating events in orbit). Cross-screening both
+answers the question that actually motivates collision avoidance — *is a
+real active spacecraft at risk from real tracked debris?* — rather than
+only debris-vs-debris. Nothing here is synthetic data dressed up as real;
+the WATCH/NOMINAL/WARNING conjunctions you'll see in a demo run are
+genuine predictions against objects that are actually up there right now.
+
+Every pairwise conjunction across both groups is screened, not just a
+handful — on a real ~120-object combined sample that's several thousand
+pairs, checked end-to-end (including the live network fetch) in well
+under a second. Naively re-propagating every pair from scratch doesn't
+scale to that (measured at ~9.6s for just 1770 pairs during development);
+each object's approximate trajectory is computed once and reused across
+every pair it appears in, and only the closest candidates by that
+estimate get the expensive precise refinement. See `PHASE_PROGRESS.md`
+Phase 10 for the full performance approach and the two real issues
+(docked-vehicle noise, a dense debris field crowding out cross-group
+results) caught by actually running this live against CelesTrak, not just
+in unit tests.
 
 ### The physics
 
@@ -208,8 +225,9 @@ in order:
 
 1. **Preflight check** — confirms which backend is configured, that it's
    actually reachable right now, and that the log directory is writable.
-2. **Real orbital data** — a live CelesTrak fetch and real Skyfield/SGP4
-   propagation, not simulated.
+2. **Real orbital data** — a live CelesTrak fetch across real stations and
+   real debris, cross-group screened, and real Skyfield/SGP4 propagation
+   — not simulated, and not just a small staged pair.
 3. **CRITICAL conjunctions** — synthetic CRITICAL-range events (real data
    rarely lands there on demand) exercising maneuver calculation,
    verification, budget depletion, and — depending on this machine's
@@ -246,6 +264,8 @@ here's what each one means, for reference:
 | `GemmaProvenance.source` | `"gemma"` (real model output) or `"fallback"` (deterministic text — both backends were unreachable) |
 | `veto_provenance` | Provenance for Gemma's own GO/NO-GO maneuver veto-check (local path, CRITICAL only) — `None` when no veto check was attempted |
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
+| `object_a_group` / `object_b_group` | Which real CelesTrak group each object came from (e.g. `stations`, `cosmos-2251-debris`) — lets a cross-group "asset vs. debris" conjunction be told apart from a within-group one |
+| `last_scan_stats` | `CelesTrakAdapter` instance attribute (not logged per-event) — what a screening call actually covered: `total_objects`, `total_pairs_screened`, `pairs_refined`, `cross_group_pairs_refined` |
 
 ## Summary
 
@@ -264,14 +284,15 @@ here's what each one means, for reference:
 - **Nothing hidden.** Every decision, every provenance detail, every
   approval, veto, or rejection is written to an append-only audit log that
   can reconstruct exactly what happened and why, on its own, after the fact.
-- **Verified, not just built.** 87 automated tests, plus every major path
-  in this document has been run against real Ollama and a real hosted API
-  key during development — not just asserted to work.
+- **Verified, not just built.** 93 automated tests, plus every major path
+  in this document has been run against real Ollama, a real hosted API
+  key, and real live CelesTrak data during development — not just
+  asserted to work.
 
-**What's next:** ideas for further phases — screening the live CelesTrak
-catalog for real current conjunctions instead of a staged pair, a visual
-dashboard, historical replay against a real past close-approach event —
-are tracked in `PHASE_PROGRESS.md`, not yet committed to.
+**What's next:** ideas for further phases — a visual dashboard for a
+judge-friendly live risk board, historical replay against a real past
+close-approach event — are tracked in `PHASE_PROGRESS.md`, not yet
+committed to.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

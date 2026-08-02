@@ -3,11 +3,13 @@
 *Build with Gemma: Triage in Light Speed*
 
 An orbital collision/conjunction predictor: pulls real satellite/debris
-tracking data (TLEs) from CelesTrak, runs real orbital mechanics
-(Skyfield/SGP4) to find close approaches over the next 48 hours,
-classifies risk severity with deterministic distance thresholds (**not**
-AI-decided — reliability matters here), and uses Gemma (local via Ollama,
-or a hosted API) to explain findings and decisions in plain language.
+tracking data (TLEs) from CelesTrak — by default real crewed stations
+cross-screened against a real debris field, not just one group in
+isolation — runs real orbital mechanics (Skyfield/SGP4) to find close
+approaches over the next 48 hours, classifies risk severity with
+deterministic distance thresholds (**not** AI-decided — reliability
+matters here), and uses Gemma (local via Ollama, or a hosted API) to
+explain findings and decisions in plain language.
 
 For the most severe (CRITICAL) conjunctions, a simplified avoidance
 maneuver is computed and independently re-verified — deterministically,

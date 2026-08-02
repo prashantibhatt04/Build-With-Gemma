@@ -121,7 +121,19 @@ def _step_preflight(ctx: DemoContext) -> None:
 
 
 def _step_live_orbital_data(ctx: DemoContext) -> None:
-    entries = run_once(adapter=CelesTrakAdapter(sample_size=15), limit=2)
+    # Real multi-group screening (Phase 10) - default groups are real
+    # crewed stations vs. a real debris field, cross-screened for actual
+    # current conjunctions, not a small staged pair. See
+    # CelesTrakAdapter's class docstring for how this stays fast.
+    adapter = CelesTrakAdapter()
+    entries = run_once(adapter=adapter, limit=2)
+    stats = adapter.last_scan_stats
+    if stats:
+        ctx.console.print(
+            f"Screened {stats['total_pairs_screened']} real pairwise conjunctions across "
+            f"{stats['total_objects']} real objects from {', '.join(stats['groups'])} "
+            f"({stats['pairs_refined']} closest-by-coarse-distance refined to full precision)."
+        )
     render_entries(entries, console=ctx.console)
     ctx.all_entries.extend(entries)
 
@@ -320,16 +332,25 @@ STEPS: list[Step] = [
         action=_step_preflight,
     ),
     Step(
-        phase="Phase 2",
-        title="Real orbital data: CelesTrak + Skyfield/SGP4",
+        phase="Phase 2, 10",
+        title="Real orbital data: CelesTrak + Skyfield/SGP4, cross-group screening",
         explanation=(
             "This project tracks satellite/debris collision risk. This step "
             "fetches REAL satellite tracking data (TLEs - Two-Line Elements) "
-            "live from CelesTrak, then runs REAL orbital mechanics (a "
-            "two-pass coarse/fine search using Skyfield's SGP4 propagator) "
-            "to find the closest predicted approach between pairs of "
-            "objects over the next 48 hours. Nothing here is simulated - "
-            "these are real objects currently in orbit."
+            "live from CelesTrak - by default, real crewed space stations "
+            "(ISS, Tiangong, ...) and a real debris field (fragments from "
+            "the 2009 Cosmos 2251/Iridium 33 collision) - then screens "
+            "EVERY pairwise conjunction across both groups combined, not "
+            "just within one, using REAL orbital mechanics (a two-pass "
+            "coarse/fine search with Skyfield's SGP4 propagator) to find "
+            "the closest predicted approach between each pair over the "
+            "next 48 hours. Nothing here is simulated - these are real "
+            "objects currently in orbit. Screening every pair this "
+            "precisely doesn't scale on its own, so each object's coarse "
+            "trajectory is computed once and reused across all its pairs, "
+            "and only the closest candidates by that coarse estimate get "
+            "the expensive precise refinement - watch the line below for "
+            "exactly how many objects/pairs were actually screened."
         ),
         action=_step_live_orbital_data,
     ),

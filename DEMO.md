@@ -123,24 +123,36 @@ skeleton works before real orbital data enters the picture. It also writes
 
 ---
 
-## Stage 2 — Real orbital data: CelesTrak + Skyfield/SGP4
+## Stage 2 — Real orbital data: CelesTrak + Skyfield/SGP4, cross-group screening
 
 ```bash
 python3 -c "
 from src.pipeline import run_once
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
-entries = run_once(adapter=CelesTrakAdapter(sample_size=15), limit=2)
+adapter = CelesTrakAdapter()  # default: real stations vs. real debris
+entries = run_once(adapter=adapter, limit=2)
+print('Scan stats:', adapter.last_scan_stats)
 for e in entries:
     print(e.model_dump_json(indent=2))
 "
 ```
 
 **What it proves:** real TLE data fetched live from CelesTrak (cached to
-`data/tle_cache/` for an hour), real orbital propagation (two-pass
-coarse/fine closest-approach search over the next 48h), real Gemma-written
-plain-language descriptions and rationales. Look for:
+`data/tle_cache/` for an hour) - by default two real, meaningfully
+different groups: `stations` (ISS, Tiangong, ...) and `cosmos-2251-debris`
+(real fragments from the 2009 Cosmos 2251/Iridium 33 collision) - screened
+against EACH OTHER, not just within one group, so this actually answers
+"is a real active spacecraft at risk from real tracked debris?" rather
+than debris-vs-debris alone. Every pairwise conjunction across the
+combined pool gets a real two-pass coarse/fine closest-approach search
+(Skyfield/SGP4) over the next 48h. `adapter.last_scan_stats` shows exactly
+what was screened: `total_objects`, `total_pairs_screened`, and
+`pairs_refined` (see Stage 2b below for why refinement is capped). Look
+for, in each printed entry:
 - `min_distance_km`, `relative_velocity_km_s`, `time_of_closest_approach` -
   all real numbers from real physics, not placeholders.
+- `object_a_group` / `object_b_group` - which real CelesTrak group each
+  object actually came from.
 - `tle_epoch_age_hours` - how stale the tracking data is.
 - `finding.confidence` - now derived from that epoch age (fresher data =
   higher confidence, see Stage 4), not a flat constant.
@@ -151,6 +163,48 @@ Real conjunction data right now tends to land in `watch` or `nominal`
 severity (min distance > 25km) - CRITICAL (<5km) is rare on any given real
 fetch, which is why Stage 5 uses a synthetic fixture to demo that path
 deterministically.
+
+---
+
+## Stage 2b — Why screening doesn't just brute-force every pair
+
+Naively running the full two-pass search on every pair the way the
+pre-Phase-10 adapter did doesn't scale: recomputing each object's coarse
+trajectory from scratch for every pair it appears in is O(pairs) expensive
+propagation calls, not O(objects). Measured directly during development,
+calling `orbital.find_closest_approach` (the per-pair convenience
+function) independently for all 1770 pairs from a real 60-object sample
+took ~9.6s - already too slow for a live demo step, and it gets worse
+quadratically. `CelesTrakAdapter` avoids this two ways (see its class
+docstring in `src/ingestion/celestrak_adapter.py` for the exact numbers):
+1. Each object's coarse-pass position is computed **once**
+   (`orbital.compute_coarse_positions`) and reused for every pair it's in,
+   instead of recomputed per pair - this alone cut the same 1770-pair
+   coarse screen to ~0.02s in testing.
+2. Only the `refine_top_k` closest pairs **by that cheap coarse estimate**
+   get the expensive precise fine-pass refinement - a coarse pass can only
+   ever *overestimate* the true closest approach (see `src/orbital.py`'s
+   module docstring), so ranking by it and refining just the closest
+   candidates is a sound way to skip pairs that are obviously nowhere near
+   each other, without risking missing a genuinely close one.
+
+See it run fast for real, on a much larger single-group sample than the
+default:
+
+```bash
+python3 -c "
+import time
+from src.ingestion.celestrak_adapter import CelesTrakAdapter
+a = CelesTrakAdapter(groups=['cosmos-2251-debris'], sample_size_per_group=100)
+t0 = time.time()
+a.fetch_batch(limit=5)
+print(f'{a.last_scan_stats} in {time.time()-t0:.2f}s')
+"
+```
+
+100 real objects -> 4950 real pairs screened, refined down to the
+`refine_top_k` closest, in a fraction of a second (excluding the one-time
+network fetch/cache).
 
 ---
 
@@ -371,13 +425,14 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 87 tests, all green - orbital math, TLE parsing, the
-CelesTrak adapter (mocked network), maneuver math, budget tracking,
-Gemma client retry/fallback (mocked), Gemma's autonomous maneuver
-veto-check (mocked), terminal rendering for every maneuver state,
-preflight checks, the full pipeline wiring, and the human-review/
-maneuver-approval log rewrites - covering everything demoed above without
-needing real network calls for CI/repeatability. (Check
+**What it proves:** 93 tests, all green - orbital math (including the
+decomposed coarse/fine search used for scalable screening), TLE parsing,
+the CelesTrak adapter's cross-group screening (mocked network), maneuver
+math, budget tracking, Gemma client retry/fallback (mocked), Gemma's
+autonomous maneuver veto-check (mocked), terminal rendering for every
+maneuver state, preflight checks, the full pipeline wiring, and the
+human-review/maneuver-approval log rewrites - covering everything demoed
+above without needing real network calls for CI/repeatability. (Check
 `PHASE_PROGRESS.md` for the current count if this drifts again as more
 gets added.)
 

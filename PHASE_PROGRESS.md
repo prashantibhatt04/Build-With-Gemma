@@ -265,3 +265,73 @@ directly (real model output: "Maneuver vetoed: blocked pending review...")
 since a genuinely unsafe/vetoed maneuver essentially never occurs in
 normal operation by design, so the narration branch needed a targeted
 live check rather than relying on the pipeline to produce one naturally.
+
+## Phase 10 — Real cross-group conjunction screening
+Status: done
+Previously CelesTrakAdapter fetched one fixed group
+(cosmos-2251-debris, sample_size=30 by default, 15 in the demo) and
+screened only within-group pairs - real data, but a small, narrow slice.
+Rebuilt to screen across MULTIPLE real CelesTrak groups at once - default
+DEFAULT_GROUPS=("stations", "cosmos-2251-debris") - answering the
+actually-motivating question ("is a real active spacecraft at risk from
+real tracked debris?") instead of debris-vs-debris alone. Benchmarked
+first before optimizing (not assumed): the naive approach - calling
+orbital.find_closest_approach per pair, unchanged - took ~9.6s for 1770
+pairs from a real 60-object sample, confirming naive brute force doesn't
+scale to a meaningfully larger real pool. Root cause: each pair
+independently recomputed its own coarse-pass propagation from scratch, so
+cost was O(pairs) expensive Skyfield calls, not O(objects). Fixed with two
+changes verified independently by direct benchmark before combining:
+1. src/orbital.py decomposed into build_coarse_times/
+   compute_coarse_positions/coarse_min_distance/refine_closest_approach,
+   with find_closest_approach kept as a behavior-identical single-pair
+   convenience wrapper (existing test unchanged, still passes, plus a new
+   test proving the decomposed path produces bit-identical results).
+   CelesTrakAdapter now calls compute_coarse_positions ONCE per satellite
+   and reuses it across every pair that satellite appears in - cut the
+   same 1770-pair coarse screen from ~9.6s to ~0.02s in isolated
+   benchmarking.
+2. Rank ALL pairs by that cached coarse distance, then only run the
+   expensive fine-pass refinement (orbital.refine_closest_approach) on
+   the closest `refine_top_k` candidates (default 80) - sound because the
+   coarse pass can only ever OVERESTIMATE the true closest approach (see
+   orbital.py's module docstring), so it's a safe proxy for true ranking,
+   not a guess.
+Combined: fetching+screening the new default (121 real objects, 7050
+pairs) end-to-end, including the live network fetch, measured at ~0.6-1s
+- fast enough for a live demo step.
+Two real issues caught only by actually running this live against
+CelesTrak (not just unit tests, matching this project's established
+practice) and fixed before calling it done:
+- CelesTrak's real "stations" group includes crewed stations AND their
+  currently-docked visiting vehicles (Soyuz, Progress, Cygnus, Crew
+  Dragon, ...) - these sit at ~0.00km separation from each other, which
+  is real, correct physics (they're physically attached) but not an
+  operational conjunction risk, and it dominated the top-ranked results,
+  crowding out anything more interesting. Fixed with
+  exclude_within_group (default: {"stations"}) - pairs within the same
+  excluded group are skipped before ever costing coarse-ranking or
+  refinement effort, not filtered post-hoc.
+- Even after that fix, a dense single-origin debris field
+  (cosmos-2251-debris - many fragments from one 2009 breakup, naturally
+  close to each other) filled the ENTIRE refine_top_k ranking on its own
+  in live testing - zero cross-group ("asset vs. debris") pairs got
+  refined, silently defeating the actual point of screening multiple
+  groups. Fixed with min_cross_group_refine (default 20): the closest
+  that many CROSS-group pairs by coarse distance are unioned into the
+  refinement set regardless of the overall ranking, guaranteeing
+  cross-group representation rather than leaving it to chance.
+last_scan_stats (groups, total_objects, total_pairs_screened,
+pairs_refined, cross_group_pairs_refined) exposed on the adapter instance
+so callers (scripts/run_demo.py) can report exactly what was screened
+without threading extra return values through fetch_batch. raw_data
+gained object_a_group/object_b_group for traceability. run_demo.py's
+orbital-data step and DEMO.md Stage 2 updated to match, plus a new Stage
+2b walking through the performance approach with a runnable benchmark
+snippet. 9 new tests (decomposition equivalence, cross-group screening,
+refine_top_k bounding, exclude_within_group, min_cross_group_refine
+guarantee). Suite: 93/93. Verified live end-to-end against real CelesTrak
+multiple times during development, including through a full
+scripts/run_demo.py --auto run against real local Ollama - confirmed fast
+(~0.6s), confirmed cross-group results present, confirmed no docked-
+vehicle noise in the top results.

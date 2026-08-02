@@ -17,11 +17,12 @@ for the most severe cases when a human is actually reachable to give one.
 ## Architecture
 
 ```
-CelesTrak (live TLE data)
+CelesTrak (live TLE data, multiple real groups: stations + debris)
         │
         ▼
-CelesTrakAdapter — Skyfield/SGP4 orbital propagation,
-                    two-pass coarse/fine closest-approach search
+CelesTrakAdapter — cross-group pairwise screening, Skyfield/SGP4
+                    orbital propagation, two-pass coarse/fine search
+                    (cached coarse pass + top-K refinement for scale)
         │
         ▼
 analyze_node — deterministic severity classification (distance thresholds)
@@ -52,12 +53,14 @@ either a local Ollama instance (`gemma4:e4b`) or a hosted Gemini-style API
 between them.
 
 Key modules: `src/orbital.py` (TLE parsing, closest-approach search),
-`src/maneuver.py` (maneuver math, independent verification, delta-v
-budget), `src/gemma_client.py` (backend-agnostic Gemma access + failover),
-`src/pipeline.py` (the LangGraph nodes), `src/logging_utils.py` (audit
-log, human-review, and maneuver-approval workflows), `src/display.py`
-(terminal rendering), `src/preflight.py` (environment health checks), and
-`scripts/run_demo.py` (the guided end-to-end demo).
+`src/ingestion/celestrak_adapter.py` (real multi-group CelesTrak fetch +
+scalable cross-group screening), `src/maneuver.py` (maneuver math,
+independent verification, delta-v budget), `src/gemma_client.py`
+(backend-agnostic Gemma access + failover), `src/pipeline.py` (the
+LangGraph nodes), `src/logging_utils.py` (audit log, human-review, and
+maneuver-approval workflows), `src/display.py` (terminal rendering),
+`src/preflight.py` (environment health checks), and `scripts/run_demo.py`
+(the guided end-to-end demo).
 
 ## How Gemma was used
 
@@ -171,6 +174,29 @@ multiple times in a row, the way a presenter rehearsing for a live demo
 naturally would. Fixed by including a per-run unique id in the synthetic
 event ids, and re-verified correct across three consecutive real runs.
 
+**Naive pairwise screening didn't scale past a handful of real objects.**
+The original CelesTrak adapter screened one small group in isolation by
+calling the two-pass closest-approach search independently for every
+pair. Benchmarked (not assumed) before optimizing: 1770 pairs from a real
+60-object sample took ~9.6s - already too slow for a live demo, and
+quadratically worse for a meaningfully larger real pool. Root cause: each
+pair recomputed its own coarse-pass orbital propagation from scratch, so
+cost scaled with the number of *pairs*, not the number of *objects*.
+Fixed by caching each object's coarse-pass position once and reusing it
+across every pair it appears in (cut the same 1770-pair screen to ~0.02s
+in isolated benchmarking), then only running the expensive precise
+refinement on the closest candidates by that cached estimate - sound
+because a coarse pass can only ever overestimate the true closest
+approach, never underestimate it. Two further issues surfaced only by
+actually running the resulting cross-group screen live against real
+CelesTrak data, not unit tests: real crewed-station groups include
+currently-docked vehicles sitting at ~0km apart (real physics, not a
+collision risk, but it dominated the top results); and a dense
+single-origin debris field could fill the entire refinement budget on its
+own, leaving zero cross-group ("asset vs. debris") results even though
+that's the actual point. Both fixed and verified live - see
+`PHASE_PROGRESS.md` Phase 10 for the full detail.
+
 ## Design choices
 
 - **Severity, action, and maneuver physics are 100% deterministic
@@ -206,23 +232,27 @@ event ids, and re-verified correct across three consecutive real runs.
 
 ## Future work
 
-With Gemma's autonomous veto-gate now built (see above), the next
-candidates - not yet committed to, tracked in `PHASE_PROGRESS.md` - are:
-screening the live CelesTrak catalog for real current conjunctions
-instead of a small staged set, a visual dashboard for a judge-friendly
-live risk board, and a historical replay/backtest against a real past
-close-approach event.
+With Gemma's autonomous veto-gate and real cross-group catalog screening
+now both built (see above), the next candidates - not yet committed to,
+tracked in `PHASE_PROGRESS.md` - are: a visual dashboard for a
+judge-friendly live risk board, and a historical replay/backtest against
+a real past close-approach event.
 
 ## Verification
 
-87 automated tests (network-free, Gemma calls mocked) cover orbital math,
-severity/confidence derivation, maneuver math, budget tracking, Gemma
-retry/fallback logic, the autonomous maneuver veto-check (including its
-fail-safe defaults), the full pipeline, and the human-approval/review
-workflows. Beyond unit tests, every major path in this writeup was also
-run live end-to-end against a real local Ollama instance and a real
-hosted API key during development - which is how the two bugs described
-above were actually found.
+93 automated tests (network-free, Gemma calls mocked, CelesTrak network
+calls mocked) cover orbital math (including the decomposed coarse/fine
+search used for scalable screening), severity/confidence derivation,
+maneuver math, budget tracking, Gemma retry/fallback logic, the
+autonomous maneuver veto-check (including its fail-safe defaults),
+cross-group conjunction screening, the full pipeline, and the
+human-approval/review workflows. Beyond unit tests, every major path in
+this writeup was also run live end-to-end against a real local Ollama
+instance, a real hosted API key, and real live CelesTrak data during
+development - which is how several of the issues described above were
+actually found, including two specific to real cross-group screening
+(docked-vehicle noise, a dense debris field crowding out cross-group
+results).
 
 See the [public repository](https://github.com/prashantibhatt04/Build-With-Gemma)
 for full source, `PROJECT_OVERVIEW.md` for a diagram-based walkthrough,

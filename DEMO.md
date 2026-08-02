@@ -73,12 +73,13 @@ the synthetic CRITICAL/budget-depletion/human-approval scenario (which of
 the two - autonomous local execution vs. cloud proposal awaiting your
 live approve/reject - depends entirely on this machine's `GEMMA_BACKEND`),
 a replay of the real 2009 Iridium 33/Cosmos 2251 collision proving the
-same severity threshold would have classified it CRITICAL, a local/cloud
-failover proof (**skipped** on a local-only machine - `GEMMA_BACKEND=ollama`
-- since demonstrating it would require a real cloud call, which a
-local-only demo should never make), marking a decision human-reviewed,
-reading back the raw audit log entry, running the test suite, and a
-summary table.
+same severity threshold would have classified it CRITICAL, a real
+decay/re-entry risk screen of a real CelesTrak debris group (a second,
+non-conjunction hazard type, see Stage 2c), a local/cloud failover proof
+(**skipped** on a local-only machine - `GEMMA_BACKEND=ollama` - since
+demonstrating it would require a real cloud call, which a local-only demo
+should never make), marking a decision human-reviewed, reading back the
+raw audit log entry, running the test suite, and a summary table.
 
 For a non-interactive run (CI / quick smoke-testing, no pauses):
 
@@ -95,12 +96,13 @@ streamlit run scripts/dashboard.py
 
 Opens at `http://localhost:8501`: a metrics row, the full decision table,
 a pending-human-approval inbox with real Approve/Reject buttons, sidebar
-actions to fetch live CelesTrak data, run the synthetic CRITICAL
+actions to fetch live CelesTrak conjunction data, screen a real CelesTrak
+debris group for decay/re-entry risk, run the synthetic CRITICAL
 scenario, or replay the historical collision without leaving the
-browser, and - for any real CelesTrak-sourced event selected in the
-inspect panel - a real 3D orbit plot (Earth to scale, both objects'
-actual propagated paths, a closest-approach marker) plus a distance-vs-
-time chart with severity thresholds drawn in, built by re-fetching each
+browser, and - for any real conjunction event selected in the inspect
+panel - a real 3D orbit plot (Earth to scale, both objects' actual
+propagated paths, a closest-approach marker) plus a distance-vs-time
+chart with severity thresholds drawn in, built by re-fetching each
 object's current TLE and re-propagating with the same physics Stage 2
 above uses. Reads the exact same `logs/decisions-*.jsonl` audit log the
 CLI writes to - run either one first (or both, in either order) and the
@@ -230,6 +232,45 @@ network fetch/cache).
 
 ---
 
+## Stage 2c — A second real hazard type: orbital decay / re-entry risk
+
+```bash
+python3 -c "
+from src.pipeline import run_once
+from src.ingestion.decay_adapter import DecayRiskAdapter
+adapter = DecayRiskAdapter(sample_size=200)  # real cosmos-2251-debris group
+entries = run_once(adapter=adapter, limit=3)
+for e in entries:
+    print(e.model_dump_json(indent=2))
+"
+```
+
+**What it proves:** conjunctions aren't the only thing this pipeline
+screens for. `DecayRiskAdapter` fetches the same kind of real CelesTrak
+TLE data (reusing `src/ingestion/tle_source.py`, the module extracted
+from `CelesTrakAdapter` specifically so both hazard adapters share one
+fetch/cache/parse path) but screens **per-object**, not pairwise: it pulls
+perigee altitude, apogee altitude, and the BSTAR drag term straight out of
+Skyfield's own SGP4 model (`sat.model.altp` / `.alta` / `.bstar` -
+`src/decay.py`) and ranks objects by how low their perigee actually is.
+No maneuver machinery applies here - re-entry isn't avoided with a
+delta-v burn the way a conjunction is - so decay CRITICAL/WARNING/WATCH
+findings get a real deterministic action and a real Gemma narration, same
+as conjunctions, but no maneuver/verification/budget step. Look for the
+same honesty markers as Stage 2: `perigee_altitude_km` and `bstar` are
+real numbers pulled straight from Skyfield, not placeholders, and
+`description_provenance.source` should say `"gemma"`.
+
+Real data here currently tops out at `watch` severity - the
+`cosmos-2251-debris` group's lowest real perigee is around 313km, above
+the WARNING/CRITICAL bands below - because the very-low-perigee fragments
+from that 2009 collision have already re-entered by now. Same "real data
+rarely produces the most severe case on demand" situation already true
+for CRITICAL conjunctions in Stage 2 - documented honestly rather than
+tuning the thresholds to force a more dramatic result.
+
+---
+
 ## Stage 3 — Deterministic severity thresholds
 
 No command needed to prove this - it's already visible in Stage 2's output
@@ -243,7 +284,19 @@ No command needed to prove this - it's already visible in Stage 2's output
 | 25 - 100         | WATCH      | continue |
 | >= 100           | NOMINAL    | continue |
 
-This is a plain threshold check, not Gemma-decided - the point being that
+The decay hazard type (Stage 2c) uses its own real, independent
+thresholds - `classify_decay_severity()` in `src/pipeline.py` - based on
+perigee altitude rather than distance, since it's a different physical
+hazard:
+
+| perigee_altitude_km | severity | action |
+|---|---|---|
+| < 200                | CRITICAL | abort (no maneuver - see Stage 2c) |
+| 200 - 300            | WARNING  | hold |
+| 300 - 500            | WATCH    | continue |
+| >= 500               | NOMINAL  | continue |
+
+Both are plain threshold checks, not Gemma-decided - the point being that
 severity/action are reliable and reproducible; Gemma only explains them in
 plain language.
 
@@ -497,15 +550,19 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 128 tests, all green - orbital math (including the
-decomposed coarse/fine search used for scalable screening), TLE parsing,
-the CelesTrak adapter's cross-group screening (mocked network), maneuver
-math (including the QA pass's plausibility bound), budget tracking, Gemma
-client retry/fallback (mocked), Gemma's autonomous maneuver veto-check
-(mocked), the historical replay (including an integration test proving
-the real 584m number classifies as CRITICAL through the actual pipeline),
-the orbit plot's real TLE fetch/propagation and Plotly figure structure
-(mocked network), terminal rendering for every maneuver state, the
+**What it proves:** 149 tests, all green - orbital math (including the
+decomposed coarse/fine search used for scalable screening), TLE parsing
+and the shared `tle_source.py` fetch/cache module, the CelesTrak
+adapter's cross-group conjunction screening (mocked network), the decay
+hazard type's severity classification and screening (mocked network,
+plus real Vanguard 1/ISS TLE fixtures exercising Skyfield's own
+perigee/apogee/BSTAR fields), maneuver math (including the QA pass's
+plausibility bound), budget tracking, Gemma client retry/fallback
+(mocked), Gemma's autonomous maneuver veto-check (mocked), the historical
+replay (including an integration test proving the real 584m number
+classifies as CRITICAL through the actual pipeline), the orbit plot's
+real TLE fetch/propagation and Plotly figure structure (mocked network),
+terminal rendering for every maneuver state and both hazard types, the
 dashboard's data transforms and UI (via Streamlit's AppTest harness),
 preflight checks, the full pipeline wiring, and the human-review/
 maneuver-approval log rewrites - covering everything demoed above

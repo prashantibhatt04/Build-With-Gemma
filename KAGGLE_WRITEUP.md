@@ -23,25 +23,34 @@ through this system's unmodified pipeline shows it would have classified
 the real 584m SOCRATES prediction as CRITICAL, against a real event where
 that same warning existed but was never acted on. A triage failure, not a
 detection failure - which is exactly the problem this track is named for.
+And it isn't conjunction-only either: a second, independently real hazard
+type - orbital decay/re-entry risk, using real orbital elements already
+parsed from the same TLE data - runs through the exact same pipeline,
+proving the "idea-agnostic" design `schemas.py` always claimed.
 
 ## Architecture
 
 ```
 CelesTrak (live TLE data, multiple real groups: stations + debris)
         │
-        ▼
-CelesTrakAdapter — cross-group pairwise screening, Skyfield/SGP4
-                    orbital propagation, two-pass coarse/fine search
-                    (cached coarse pass + top-K refinement for scale)
+        ├──▶ CelesTrakAdapter — cross-group PAIRWISE screening, Skyfield/
+        │     SGP4 propagation, two-pass coarse/fine search (cached coarse
+        │     pass + top-K refinement for scale) -> conjunction risk
+        │
+        └──▶ DecayRiskAdapter — per-OBJECT screening using Skyfield's own
+              already-parsed perigee altitude + BSTAR -> decay/re-entry risk
         │
         ▼
-analyze_node — deterministic severity classification (distance thresholds)
+analyze_node — deterministic severity classification (distance thresholds
+             for conjunctions, perigee-altitude bands for decay risk)
              — Gemma: plain-language description of the finding
         │
         ▼
 decide_node — deterministic action mapping (severity -> action)
-            — for CRITICAL: deterministic maneuver calc + independent
-              verification + delta-v budget check
+            — for CRITICAL conjunctions only: deterministic maneuver calc
+              + independent verification + delta-v budget check (decay
+              CRITICAL gets a real action + narration, no maneuver -
+              conjunction-specific scope, not overlooked)
             — local backend -> Gemma's own GO/NO-GO veto check, then
               self-approve (bounded: can only veto, never approve
               what physics hasn't already cleared)
@@ -63,11 +72,18 @@ either a local Ollama instance (`gemma4:e4b`) or a hosted Gemini-style API
 between them.
 
 Key modules: `src/orbital.py` (TLE parsing, closest-approach search),
+`src/ingestion/tle_source.py` (shared CelesTrak fetch + cache + TLE-block
+parsing, used by both hazard adapters below),
 `src/ingestion/celestrak_adapter.py` (real multi-group CelesTrak fetch +
-scalable cross-group screening), `src/maneuver.py` (maneuver math,
-independent verification, delta-v budget), `src/gemma_client.py`
-(backend-agnostic Gemma access + failover), `src/pipeline.py` (the
-LangGraph nodes), `src/logging_utils.py` (audit log, human-review, and
+scalable cross-group screening for conjunctions), `src/decay.py`
+(pulls real perigee/apogee altitude and BSTAR straight out of Skyfield's
+own SGP4 model - no separate parser needed), `src/ingestion/decay_adapter.py`
+(screens a real CelesTrak debris group for low-perigee objects and ranks
+them by decay risk), `src/maneuver.py` (maneuver math, independent
+verification, delta-v budget), `src/gemma_client.py` (backend-agnostic
+Gemma access + failover), `src/pipeline.py` (the LangGraph nodes, now
+branching on raw-data shape to classify either conjunction or decay
+risk), `src/logging_utils.py` (audit log, human-review, and
 maneuver-approval workflows), `src/display.py` (terminal rendering),
 `src/preflight.py` (environment health checks), `scripts/run_demo.py`
 (the guided end-to-end demo), `scripts/dashboard.py` +
@@ -279,26 +295,44 @@ a re-derived one, and clearly labeled as such (`source=
   state is added (the way Phase 8 originally required, and the way
   Phase 9's veto state was, in hindsight, an opportunity to do this
   extraction sooner).
+- **The schemas were built hazard-agnostic from the start, and Phase 14
+  is where that actually got tested.** `TelemetryEvent`/`AnomalyFinding`/
+  `Decision` never assumed "conjunction" - they were documented as
+  idea-agnostic from early on, but nothing had exercised that claim until
+  a second real hazard type (orbital decay/re-entry risk) was added.
+  `analyze_node`/`decide_node` branch on the *shape* of `raw_data`
+  (`min_distance_km`+`object_a_id` vs. `perigee_altitude_km`+`object_id`)
+  rather than a hardcoded hazard-type field, and no existing conjunction
+  code path needed to change - a real test of whether the "idea-agnostic"
+  design was actually true, not just asserted.
 
 ## Future work
 
 Every phase originally scoped for this submission is now built - the
 autonomous veto-gate, real cross-group catalog screening, a live
-dashboard, the historical replay, and a real 3D orbit visualization (see
-above) - plus a full QA/gap-analysis/fresh-eyes review pass afterward.
-Further ideas (multi-hazard triage beyond conjunctions) remain
-open-ended, not committed next steps.
+dashboard, the historical replay, a real 3D orbit visualization, and a
+second real hazard type (orbital decay/re-entry risk, screened from a
+real CelesTrak debris group using Skyfield's own SGP4 model) - plus a
+full QA/gap-analysis/fresh-eyes review pass afterward. Decay risk
+currently stops at NOMINAL/WATCH classification by design: real-world
+severity depends on the deterministic thresholds alone, and the maneuver/
+budget/veto machinery stays conjunction-specific since re-entry isn't
+avoided with a delta-v burn the way a conjunction is. Extending
+human-approval-style workflows to decay events (e.g. re-entry monitoring
+tasks) remains an open idea, not a committed next step.
 
 ## Verification
 
-128 automated tests (network-free, Gemma calls mocked, CelesTrak network
+149 automated tests (network-free, Gemma calls mocked, CelesTrak network
 calls mocked, the dashboard tested via Streamlit's own AppTest harness)
 cover orbital math (including the decomposed coarse/fine search used for
 scalable screening), severity/confidence derivation, maneuver math
 (including the plausibility bound added by the QA pass), budget tracking,
 Gemma retry/fallback logic, the autonomous maneuver veto-check (including
 its fail-safe defaults and a negation-parsing regression case), cross-group
-conjunction screening, the dashboard's data transforms and UI wiring, the
+conjunction screening, decay-risk classification and screening (including
+real Vanguard 1/ISS TLE fixtures exercising Skyfield's own perigee/apogee/
+BSTAR fields), the dashboard's data transforms and UI wiring, the
 historical replay (including an integration test proving the real 584m
 number classifies as CRITICAL through the actual pipeline), the orbit
 plot's real TLE fetch/propagation and figure structure, the full pipeline,
@@ -313,12 +347,18 @@ Gemma timeouts too short for real hosted-API latency, and a fallback
 error silently discarded). The dashboard specifically was verified in a
 real browser against the real accumulated audit log, including clicking
 a real Approve button and confirming via the raw log file afterward that
-it actually executed, and rotating the real 3D orbit plot to confirm it
-showed genuine elliptical paths, not placeholder geometry. The historical
+it actually executed, rotating the real 3D orbit plot to confirm it
+showed genuine elliptical paths, not placeholder geometry, and clicking
+the real decay-risk screening button to confirm live CelesTrak debris
+data flows through to real Gemma narration. The historical
 replay was verified live twice: directly (confirming CRITICAL
 classification and a real Gemma GO verdict referencing the actual
 verified clearance) and through a full guided-demo run (confirming
-correct integration and summary totals).
+correct integration and summary totals). The decay hazard type was also
+verified live end-to-end, including the honest finding that the real
+`cosmos-2251-debris` group's lowest perigee (~313km) currently only
+reaches WATCH severity, not CRITICAL - documented openly rather than
+tuning thresholds to force a more dramatic result on demand.
 
 See the [public repository](https://github.com/prashantibhatt04/Build-With-Gemma)
 for full source, `PROJECT_OVERVIEW.md` for a diagram-based walkthrough,

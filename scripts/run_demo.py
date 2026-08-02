@@ -38,6 +38,7 @@ from src.config import Settings, settings
 from src.display import render_entries
 from src.gemma_client import GemmaClient
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
+from src.ingestion.decay_adapter import DecayRiskAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
@@ -172,6 +173,27 @@ def _step_historical_replay(ctx: DemoContext) -> None:
         f"[bold red]{entry.finding.severity.value.upper()}[/bold red] - correctly "
         "and unambiguously, using the exact same math as every other event in "
         "this walkthrough. Nothing was special-cased for this replay."
+    )
+    ctx.all_entries.extend(entries)
+
+
+def _step_decay_risk(ctx: DemoContext) -> None:
+    adapter = DecayRiskAdapter(sample_size=200)
+    entries = run_once(adapter=adapter, limit=3)
+    render_entries(entries, console=ctx.console)
+    worst = entries[0]
+    raw = worst.telemetry.raw_data
+    ctx.console.print(
+        f"\nLowest real perigee in this scan: {raw['object_name']} at "
+        f"{raw['perigee_altitude_km']:.0f} km, classified "
+        f"[bold]{worst.finding.severity.value.upper()}[/bold] - the same "
+        "deterministic threshold used for every decay assessment, real data "
+        "or not. Real debris fields tend to sit in a stable-ish altitude "
+        "band by now (the lowest-perigee fragments already decayed away "
+        "years ago), so WATCH is typically the most severe outcome this "
+        "specific real scan finds on any given run - same 'real data rarely "
+        "produces the most severe case on demand' pattern as CRITICAL "
+        "conjunctions."
     )
     ctx.all_entries.extend(entries)
 
@@ -408,6 +430,30 @@ STEPS: list[Step] = [
             "a historical replay."
         ),
         action=_step_historical_replay,
+    ),
+    Step(
+        phase="Phase 14",
+        title="A second real hazard: orbital decay / re-entry risk",
+        explanation=(
+            "Everything above is about collision risk between two objects. "
+            "This step proves the pipeline isn't conjunction-specific by "
+            "construction (see schemas.py's own docstring: telemetry/"
+            "finding/decision are deliberately 'idea-agnostic') - it screens "
+            "REAL objects individually (not pairs) for orbital decay risk, "
+            "using real perigee altitude and BSTAR drag term Skyfield's SGP4 "
+            "model already parses from the SAME TLE data this project "
+            "already fetches. No new data source, no new credentials. An "
+            "object's perigee altitude alone is a real, well-established "
+            "decay signal - below ~200km, real objects reliably reenter "
+            "within days to weeks, regardless of other factors. Unlike "
+            "conjunctions, a CRITICAL decay finding does NOT trigger "
+            "maneuver/budget/veto/approval machinery in this phase - that's "
+            "conjunction-specific scope (an avoidance burn makes no sense "
+            "for 'your perigee is too low'); it gets a real deterministic "
+            "classification and real Gemma narration, same as everything "
+            "else, just no maneuver plan."
+        ),
+        action=_step_decay_risk,
     ),
     Step(
         phase="Phase 4",

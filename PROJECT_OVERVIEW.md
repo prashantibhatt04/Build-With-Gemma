@@ -311,6 +311,47 @@ computes a maneuver — no special-casing for this being a replay. Try it:
 `python scripts/run_demo.py` (Step 4) or the dashboard's "Replay
 historical event" button.
 
+## A second real hazard: orbital decay / re-entry risk
+
+Every phase before this one was conjunction-specific — even though
+`schemas.py`'s own docstring always described `TelemetryEvent`/
+`AnomalyFinding`/`Decision` as "intentionally idea-agnostic." This phase
+makes that real: `DecayRiskAdapter` (`src/ingestion/decay_adapter.py`)
+screens real tracked objects **individually** (not pairs) for orbital
+decay/re-entry risk, through the exact same `analyze_node -> decide_node
+-> log_node` pipeline every conjunction already goes through — using data
+this project already fetches, no new data source, no new credentials.
+
+Skyfield's SGP4 model (the same `EarthSatellite` object already used for
+conjunction propagation) already parses real perigee/apogee altitude and
+the BSTAR drag term directly from the TLE — confirmed against ISS's real
+current TLE before building anything (~414km, the correct real altitude),
+so `src/decay.py` needed no separate TLE parser at all. Perigee altitude
+alone is the severity signal: it's real, well-established, uncontested
+orbital mechanics on its own — an object with a perigee below ~200km
+reliably reenters within days to weeks regardless of other factors — not
+a precise reentry-time predictor, the same "simplified, clearly labeled,
+not flight software" spirit as the maneuver math.
+
+**Deliberately no maneuver machinery for decay, even at CRITICAL.** A
+CRITICAL decay finding still gets a real deterministic action and real
+Gemma narration, exactly like everything else — just no maneuver plan.
+Building a second simplified-maneuver model (a reboost/deorbit planner,
+with its own delta-v budget and approval semantics) was explicitly scoped
+*out* of this phase, not overlooked: an avoidance burn doesn't mean
+anything for "your perigee is too low," and that's a genuinely separate
+problem for a future phase, not a small addition to this one.
+
+**One honest number, not tuned around:** with the default real group
+(`cosmos-2251-debris`) and these thresholds, live screening currently
+tops out at WATCH — the lowest real perigee across the full 598-object
+group is ~313km, since the lowest-perigee fragments from the 2009 breakup
+already decayed away over the years since. Same "real data rarely
+produces the most severe case live" pattern already established for
+CRITICAL conjunctions (see Phase 5) — no synthetic fixture was built to
+paper over this. Try it: `python scripts/run_demo.py` (Step 5) or the
+dashboard's "Screen for orbital decay risk" button.
+
 ## What the demo shows, step by step
 
 `python scripts/run_demo.py` walks through all of this live, self-explained,
@@ -329,18 +370,21 @@ in order:
 4. **Historical replay** — the real 2009 Iridium 33/Cosmos 2251 collision
    record, fed through the same unmodified pipeline, proving the
    deterministic threshold would have classified it CRITICAL.
-5. **Local/cloud failover** — proves the system recovers automatically if
+5. **A second real hazard** — real objects screened individually for
+   orbital decay/re-entry risk, proving the pipeline isn't
+   conjunction-specific, with no maneuver machinery even at CRITICAL.
+6. **Local/cloud failover** — proves the system recovers automatically if
    its primary Gemma backend becomes unreachable (skipped on a
    local-only machine, so a local demo never makes an unplanned cloud call).
-6. **Human review** — marks a logged decision as reviewed, persisted to
+7. **Human review** — marks a logged decision as reviewed, persisted to
    the actual audit file, not just held in memory.
-7. **The audit trail itself** — reads back the real, raw, most recent log
+8. **The audit trail itself** — reads back the real, raw, most recent log
    entry, showing every field described above populated for real.
-8. **Automated test suite** — the full suite (network-free, mocked Gemma)
+9. **Automated test suite** — the full suite (network-free, mocked Gemma)
    runs live, proving none of the above happened without a safety net.
-9. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
-   maneuvers executed (autonomous vs. human-approved) vs. blocked vs.
-   rejected.
+10. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
+    maneuvers executed (autonomous vs. human-approved) vs. blocked vs.
+    rejected.
 
 ## Field glossary
 
@@ -362,8 +406,9 @@ here's what each one means, for reference:
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 | `object_a_group` / `object_b_group` | Which real CelesTrak group each object came from (e.g. `stations`, `cosmos-2251-debris`) — lets a cross-group "asset vs. debris" conjunction be told apart from a within-group one |
 | `last_scan_stats` | `CelesTrakAdapter` instance attribute (not logged per-event) — what a screening call actually covered: `total_objects`, `total_pairs_screened`, `pairs_refined`, `cross_group_pairs_refined` |
-| `source` (`TelemetryEvent`) | `"celestrak"` (real live), `"synthetic-critical-fixture"` (synthetic), or `"historical-replay"` (real, documented, but historical) — never ambiguous about which |
+| `source` (`TelemetryEvent`) | `"celestrak"` (real conjunction), `"celestrak-decay"` (real decay risk), `"synthetic-critical-fixture"` (synthetic), or `"historical-replay"` (real, documented, but historical) — never ambiguous about which |
 | `historical_event` / `historical_source` / `historical_actual_outcome` | Only present for historical replays — the citation and real-world outcome travel with the record itself, not just in documentation |
+| `perigee_altitude_km` / `apogee_altitude_km` / `bstar` | Only present for decay-hazard events — real orbital elements Skyfield's SGP4 model already parses, not a separate TLE parser |
 
 ## Summary
 
@@ -386,7 +431,12 @@ here's what each one means, for reference:
   The 2009 Iridium 33/Cosmos 2251 collision — a real, documented triage
   failure — classifies as CRITICAL through this system's ordinary,
   unmodified severity threshold, using the real 584m SOCRATES prediction.
-- **Verified, not just built.** 128 automated tests, plus every major path
+- **Not just conjunctions.** A second, independently real hazard type —
+  orbital decay/re-entry risk — runs through the exact same pipeline,
+  using real orbital elements Skyfield already parses from data this
+  project already fetches. `schemas.py` always said its shapes were
+  "idea-agnostic"; this is that claim actually exercised, not just stated.
+- **Verified, not just built.** 149 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -399,9 +449,9 @@ here's what each one means, for reference:
   QA pass entry.
 
 Every phase originally scoped for this submission, plus the visual orbit
-plot added afterward, is now built. Further ideas (multi-hazard triage
-beyond conjunctions) remain open-ended, not tracked as committed next
-steps.
+plot and a second real hazard type (orbital decay) added afterward, is
+now built. Further extensions (a third hazard type, e.g. attitude/
+pointing loss) remain open-ended, not tracked as committed next steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

@@ -2,21 +2,17 @@
 from __future__ import annotations
 
 import itertools
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
-import requests
 from skyfield.api import EarthSatellite, load
 
 from ..orbital import build_coarse_times, coarse_min_distance, compute_coarse_positions, parse_norad_id, parse_tle_epoch, refine_closest_approach
 from ..schemas import TelemetryEvent
 from .base_adapter import DataSourceAdapter
-
-DEFAULT_CACHE_DIR = Path("data/tle_cache")
-CACHE_MAX_AGE_SECONDS = 60 * 60  # 1 hour
+from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_group_text, parse_tle_blocks
 
 # Two real, meaningfully different CelesTrak groups by default: crewed
 # stations (the asset actually worth protecting) and a real debris field
@@ -121,42 +117,13 @@ class CelesTrakAdapter(DataSourceAdapter):
         # threading extra return values through fetch_batch's interface.
         self.last_scan_stats: Optional[dict] = None
 
-    def _cache_path(self, group: str) -> Path:
-        return self.cache_dir / f"{group}.txt"
-
-    def _fetch_tle_text(self, group: str) -> str:
-        cache_path = self._cache_path(group)
-        if cache_path.exists():
-            age_seconds = time.time() - cache_path.stat().st_mtime
-            if age_seconds < CACHE_MAX_AGE_SECONDS:
-                return cache_path.read_text()
-
-        url = f"https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=tle"
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        text = response.text
-
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(text)
-        return text
-
-    @staticmethod
-    def _parse_tle_groups(text: str) -> list[tuple[str, str, str]]:
-        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-        groups = []
-        for i in range(0, len(lines) - 2, 3):
-            name, line1, line2 = lines[i], lines[i + 1], lines[i + 2]
-            if line1.startswith("1 ") and line2.startswith("2 "):
-                groups.append((name.strip(), line1, line2))
-        return groups
-
     def _fetch_sample(self) -> list[tuple[str, str, str, str]]:
         """Returns (name, tle_line1, tle_line2, source_group) for up to
         sample_size_per_group real objects from each configured group."""
         sample = []
         for group in self.groups:
-            text = self._fetch_tle_text(group)
-            group_sample = self._parse_tle_groups(text)[: self.sample_size_per_group]
+            text = fetch_tle_group_text(group, self.cache_dir)
+            group_sample = parse_tle_blocks(text)[: self.sample_size_per_group]
             sample.extend((name, l1, l2, group) for name, l1, l2 in group_sample)
         return sample
 

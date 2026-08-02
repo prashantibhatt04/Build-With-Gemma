@@ -15,6 +15,7 @@ from src.pipeline import (
     _MANEUVER_VETO_SYSTEM,
     _extract_final_answer,
     _parse_veto_verdict,
+    classify_decay_severity,
     make_analyze_node,
     make_decide_node,
     run_once,
@@ -260,6 +261,82 @@ def test_analyze_node_derives_confidence_from_tle_epoch_age(
     })
 
     assert result_state["finding"].confidence == expected_confidence
+
+
+def _make_decay_event(perigee_altitude_km: float) -> TelemetryEvent:
+    """Builds a TelemetryEvent shaped like DecayRiskAdapter's output -
+    single-object (object_id/object_name), not a conjunction pair."""
+    raw_data = {
+        "object_id": "33821",
+        "object_name": "COSMOS 2251 DEB",
+        "perigee_altitude_km": perigee_altitude_km,
+        "apogee_altitude_km": perigee_altitude_km + 50.0,
+        "bstar": 0.0008,
+        "tle_epoch_age_hours": 12.0,
+    }
+    return TelemetryEvent(
+        event_id="decay-33821",
+        timestamp=datetime.now(timezone.utc),
+        source="celestrak-decay",
+        raw_data=raw_data,
+    )
+
+
+@pytest.mark.parametrize(
+    "perigee_altitude_km,expected_severity",
+    [
+        (199.9, Severity.CRITICAL),
+        (200.1, Severity.WARNING),
+        (299.9, Severity.WARNING),
+        (300.1, Severity.WATCH),
+        (499.9, Severity.WATCH),
+        (500.1, Severity.NOMINAL),
+    ],
+)
+def test_classify_decay_severity_by_perigee_altitude(perigee_altitude_km, expected_severity):
+    assert classify_decay_severity(perigee_altitude_km) == expected_severity
+
+
+def test_analyze_node_classifies_decay_risk_and_uses_decay_description():
+    event = _make_decay_event(150.0)  # CRITICAL range
+    analyze_node = make_analyze_node(FakeGemmaClient())
+
+    result_state = analyze_node({
+        "telemetry": event, "finding": None, "decision": None, "log_path": None,
+    })
+
+    finding = result_state["finding"]
+    assert finding.severity == Severity.CRITICAL
+    # tle_epoch_age_hours=12.0 in the fixture -> 0.9 via the same
+    # compute_confidence signal conjunctions use, not the 0.5 fallback -
+    # confirms the decay branch reuses it rather than falling through to
+    # the generic placeholder path.
+    assert finding.confidence == 0.9
+    assert finding.description == "Stubbed anomaly commentary: nothing to report."
+
+
+def test_decide_node_critical_decay_gets_no_maneuver_machinery():
+    """The maneuver/budget/veto/approval machinery is conjunction-specific
+    scope (see decide_node's guard) - a CRITICAL decay finding should still
+    get a real deterministic action and real Gemma narration, just no
+    maneuver_plan, and critically: no KeyError from trying to read
+    object_a_id/min_distance_km off decay-shaped raw_data."""
+    event = _make_decay_event(150.0)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(FakeGemmaClient())
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.action == Action.ABORT
+    assert decision.maneuver_plan is None
+    assert decision.verified_clearance is None
+    assert decision.maneuver_approval is None
+    assert decision.budget_insufficient is False
+    assert decision.awaiting_human_approval is False
+    assert result_state["veto_provenance"] is None  # no veto check for non-conjunction data
 
 
 def _make_finding(severity: Severity, event: TelemetryEvent) -> AnomalyFinding:

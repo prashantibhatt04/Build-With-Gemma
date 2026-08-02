@@ -36,7 +36,7 @@ def _mock_response(text):
     return response
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_caches_and_avoids_refetching(mock_get, tmp_path):
     mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)
     adapter = CelesTrakAdapter(
@@ -52,7 +52,7 @@ def test_fetch_batch_caches_and_avoids_refetching(mock_get, tmp_path):
     assert (tmp_path / "test-group.txt").exists()
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_returns_results_sorted_by_distance_ascending(mock_get, tmp_path):
     mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)
     adapter = CelesTrakAdapter(
@@ -82,7 +82,7 @@ def test_fetch_batch_returns_results_sorted_by_distance_ascending(mock_get, tmp_
         assert raw["tle_epoch_age_hours"] > 0
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_event_ids_are_unique_across_separate_scans(mock_get, tmp_path):
     """Regression test: the SAME real object pair (identical TLEs -> same
     closest-approach result here) previously produced the IDENTICAL
@@ -105,7 +105,7 @@ def test_fetch_batch_event_ids_are_unique_across_separate_scans(mock_get, tmp_pa
     assert first_ids.isdisjoint(second_ids)
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_respects_explicit_run_id(mock_get, tmp_path):
     mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)
     adapter = CelesTrakAdapter(
@@ -117,7 +117,7 @@ def test_fetch_batch_respects_explicit_run_id(mock_get, tmp_path):
     assert all(e.event_id.endswith("-fixed-id") for e in events)
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_screens_across_multiple_groups(mock_get, tmp_path):
     """Phase 10: the whole point of multiple groups is cross-group
     screening (e.g. real assets vs. real debris) - confirm pairs spanning
@@ -144,7 +144,7 @@ def test_fetch_batch_screens_across_multiple_groups(mock_get, tmp_path):
     assert (tmp_path / "other-group.txt").exists()
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_refine_top_k_bounds_expensive_refinement(mock_get, tmp_path):
     """Phase 10: refine_top_k caps how many pairs get the expensive
     fine-pass refinement, regardless of how many total pairs exist -
@@ -171,7 +171,7 @@ def test_fetch_batch_refine_top_k_bounds_expensive_refinement(mock_get, tmp_path
     }
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_guarantees_minimum_cross_group_refinement(mock_get, tmp_path):
     """A dense same-group cluster could otherwise fill the entire
     refine_top_k ranking (live-verified during development with CelesTrak's
@@ -194,7 +194,7 @@ def test_fetch_batch_guarantees_minimum_cross_group_refinement(mock_get, tmp_pat
     assert any(e.raw_data["object_a_group"] != e.raw_data["object_b_group"] for e in events)
 
 
-@patch("src.ingestion.celestrak_adapter.requests.get")
+@patch("src.ingestion.tle_source.requests.get")
 def test_fetch_batch_excludes_pairs_within_an_excluded_group(mock_get, tmp_path):
     """Live-verified during development: CelesTrak's real 'stations' group
     contains crewed stations AND their currently-docked visiting vehicles,

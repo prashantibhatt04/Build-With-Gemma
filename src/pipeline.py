@@ -164,6 +164,22 @@ def classify_conjunction_severity(min_distance_km: float) -> Severity:
     return Severity.NOMINAL
 
 
+def classify_decay_severity(perigee_altitude_km: float) -> Severity:
+    """Deterministic perigee-altitude-based severity for the decay hazard
+    (see src/decay.py) - not Gemma-derived, matching
+    classify_conjunction_severity's design. Real, well-established LEO
+    decay bands: below these altitudes, real objects reliably reenter
+    within roughly the stated timeframe, regardless of other factors -
+    not a precise reentry-time predictor, just a reliable threshold."""
+    if perigee_altitude_km < 200:
+        return Severity.CRITICAL  # days to weeks
+    if perigee_altitude_km < 300:
+        return Severity.WARNING  # weeks to months
+    if perigee_altitude_km < 500:
+        return Severity.WATCH  # months to a few years
+    return Severity.NOMINAL
+
+
 def _conjunction_description(client: GemmaClient, raw: dict) -> tuple[str, GemmaProvenance]:
     prompt = (
         "Summarize this satellite conjunction (close approach) for a mission "
@@ -191,20 +207,53 @@ def _conjunction_description(client: GemmaClient, raw: dict) -> tuple[str, Gemma
     )
 
 
+def _decay_description(client: GemmaClient, raw: dict) -> tuple[str, GemmaProvenance]:
+    prompt = (
+        "Summarize this satellite's orbital decay risk for a mission "
+        "controller in 1-2 plain-language sentences:\n"
+        f"Object: {raw['object_name']} (NORAD {raw['object_id']})\n"
+        f"Perigee altitude: {raw['perigee_altitude_km']:.1f} km\n"
+        f"Apogee altitude: {raw['apogee_altitude_km']:.1f} km\n"
+        f"BSTAR drag term: {raw['bstar']:.3e}"
+    )
+    fallback_text = (
+        f"{raw['object_name']} has a perigee altitude of "
+        f"{raw['perigee_altitude_km']:.1f} km (apogee {raw['apogee_altitude_km']:.1f} km). "
+        "Gemma was unreachable, so this is a fallback summary."
+    )
+    return _call_gemma_with_provenance(
+        client,
+        prompt=prompt,
+        system="You are assisting a mission controller by summarizing orbital "
+               "decay/re-entry risk in plain language. Be concise and factual - "
+               "this is a simplified, perigee-altitude-based assessment, not a "
+               "precise reentry-time prediction, so don't state a specific "
+               "reentry date. Respond in plain prose only - no LaTeX, no "
+               "markdown formatting, no special notation.",
+        fallback_text=fallback_text,
+    )
+
+
 def make_analyze_node(client: GemmaClient):
     def analyze_node(state: PipelineState) -> PipelineState:
         event = state["telemetry"]
         raw = event.raw_data
         min_distance_km = raw.get("min_distance_km")
+        perigee_altitude_km = raw.get("perigee_altitude_km")
 
         if min_distance_km is not None:
             severity = classify_conjunction_severity(min_distance_km)
             description, description_provenance = _conjunction_description(client, raw)
             confidence = compute_confidence(raw)
+        elif perigee_altitude_km is not None:
+            severity = classify_decay_severity(perigee_altitude_km)
+            description, description_provenance = _decay_description(client, raw)
+            confidence = compute_confidence(raw)
         else:
-            # Non-conjunction telemetry (e.g. DummyAdapter's generic payload) -
-            # no real detection logic for this shape yet, so no Gemma call is
-            # attempted at all (nothing to attribute provenance to).
+            # Non-conjunction, non-decay telemetry (e.g. DummyAdapter's
+            # generic payload) - no real detection logic for this shape
+            # yet, so no Gemma call is attempted at all (nothing to
+            # attribute provenance to).
             severity = Severity.NOMINAL
             description = "Placeholder anomaly check - no real detection logic yet."
             description_provenance = None
@@ -252,6 +301,13 @@ def _decision_rationale(
             f"Minimum distance: {raw['min_distance_km']:.3f} km",
             f"Relative velocity: {raw['relative_velocity_km_s']:.3f} km/s",
             f"Time of closest approach: {raw['time_of_closest_approach']}",
+        ]
+    elif raw.get("perigee_altitude_km") is not None:
+        lines += [
+            f"Object: {raw['object_name']} (NORAD {raw['object_id']})",
+            f"Perigee altitude: {raw['perigee_altitude_km']:.1f} km",
+            f"Apogee altitude: {raw['apogee_altitude_km']:.1f} km",
+            f"BSTAR drag term: {raw['bstar']:.3e}",
         ]
 
     if finding.severity == Severity.CRITICAL and maneuver_plan is not None and budget_insufficient:
@@ -353,7 +409,16 @@ def _decision_rationale(
             "that produced it - do not say the action 'may not be required' or "
             "similar."
         )
-        if action == Action.HOLD:
+        if action == Action.HOLD and raw.get("perigee_altitude_km") is not None:
+            instruction += (
+                " Then, as a natural continuation of that same recommendation (not "
+                "a contradiction of it), suggest in general terms only (no precise "
+                "burn math or delta-v figures) a plausible next step given the "
+                "decaying orbit - e.g. an increased tracking/monitoring cadence, or "
+                "planning ahead for a reboost or controlled-deorbit decision as the "
+                "perigee continues to drop."
+            )
+        elif action == Action.HOLD:
             instruction += (
                 " Then, as a natural continuation of that same recommendation (not "
                 "a contradiction of it), suggest in general terms only (no precise "
@@ -369,7 +434,8 @@ def _decision_rationale(
         client,
         prompt=prompt,
         system="You are assisting a mission controller by explaining a "
-               "collision-avoidance action in plain language. Be concise, "
+               "spacecraft-safety action (collision avoidance or orbital "
+               "decay/re-entry risk) in plain language. Be concise, "
                "factual, decisive, and avoid precise maneuver figures beyond "
                "what you're explicitly given. The action has already been "
                "decided deterministically before you are called - for "
@@ -513,9 +579,17 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
         budget_insufficient = False
         awaiting_human_approval = False
         maneuver_vetoed = False
-        if finding.severity == Severity.CRITICAL:
-            # CRITICAL is only ever produced from conjunction-shaped raw_data
-            # (see classify_conjunction_severity), so these keys are present.
+        # CRITICAL can now come from either hazard type (conjunctions via
+        # classify_conjunction_severity, or orbital decay via
+        # classify_decay_severity - see analyze_node) - the maneuver
+        # machinery below is conjunction-specific (an avoidance burn makes
+        # no sense for "your perigee is too low"), so it's gated on the
+        # raw_data actually being conjunction-shaped, not just on severity.
+        # A CRITICAL decay finding still gets a real deterministic action
+        # (Action.ABORT) and real Gemma narration - just no maneuver/
+        # budget/veto/approval machinery, which is conjunction-only scope
+        # for this phase (see PHASE_PROGRESS.md Phase 14).
+        if finding.severity == Severity.CRITICAL and "object_a_id" in raw:
             maneuver_plan = compute_avoidance_maneuver(
                 object_a=raw["object_a_id"],
                 object_b=raw["object_b_id"],

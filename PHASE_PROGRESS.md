@@ -608,3 +608,99 @@ chart's structure was verified via an isolated live smoke test (real
 fetch + real propagation, outside the browser) plus its dedicated unit
 tests, rather than fighting this environment's flaky browser-scroll
 behavior on an already-proven code path.
+
+## Phase 14 — A second real hazard type: orbital decay / re-entry risk
+Status: done
+Every prior phase was conjunction-specific, even though schemas.py's own
+docstring always said the telemetry/finding/decision shapes were
+"intentionally idea-agnostic." This phase makes that real: a second,
+independently real hazard type - orbital decay/re-entry risk - screened
+through the exact same analyze_node -> decide_node -> log_node pipeline,
+using data this project already fetches (no new data source, no new
+credentials).
+Verified feasibility before designing anything: confirmed directly that
+Skyfield's SGP4 model (the same EarthSatellite object already used for
+conjunction propagation) exposes real, already-parsed perigee/apogee
+altitude (`sat.model.altp`/`alta`) and the BSTAR drag term
+(`sat.model.bstar`) - checked against ISS's real current TLE and got
+~414km, the correct real ISS altitude. This meant src/decay.py needed no
+separate TLE-column parser at all - just reads values Skyfield already
+computed.
+Added:
+- src/ingestion/tle_source.py: extracted CelesTrakAdapter's fetch-with-
+  disk-caching and TLE-block-parsing logic into shared module-level
+  functions (fetch_tle_group_text, parse_tle_blocks), refactored
+  CelesTrakAdapter to use them (behavior-preserving - all 8 of its
+  existing tests pass unchanged after just retargeting their
+  `requests.get` mock path). A genuine second real consumer
+  (DecayRiskAdapter) justified this promotion, matching the same
+  reasoning Phase 11 used for SyntheticCriticalAdapter.
+- src/decay.py: assess_decay_risk() builds a raw_data dict from
+  Skyfield's own orbital elements. Explicitly NOT a real atmospheric-
+  drag/decay-rate model (needs solar flux + atmospheric density tables) -
+  perigee altitude alone is the signal, since it's real, well-established,
+  uncontested orbital mechanics on its own (an object with a perigee
+  below ~200km reliably reenters within days to weeks regardless of other
+  factors), not a precise reentry-time predictor. Same "simplified,
+  clearly labeled as simplified, not flight software" spirit as
+  src/maneuver.py.
+- src/ingestion/decay_adapter.py: DecayRiskAdapter screens objects
+  INDIVIDUALLY (not pairs) from a real CelesTrak group (default:
+  cosmos-2251-debris, the same real debris field CelesTrakAdapter already
+  uses for conjunctions), ranked by ascending perigee (most at-risk
+  first). source="celestrak-decay" (not "celestrak") so it's always
+  distinguishable downstream from conjunction-pair data without needing
+  to inspect raw_data shape.
+- pipeline.py: classify_decay_severity (same threshold-check design as
+  classify_conjunction_severity - 200/300/500km bands), _decay_description
+  (a new Gemma prompt), analyze_node gained a third branch
+  (conjunction-shaped / decay-shaped / generic-placeholder, keyed off
+  which raw_data fields are present - same pattern already used to tell
+  conjunctions from DummyAdapter's generic payload). decide_node's
+  maneuver-computation block is now gated on `"object_a_id" in raw`, not
+  severity alone - a CRITICAL decay finding gets a real deterministic
+  action (ABORT) and real Gemma narration through the existing generic
+  rationale branch, but deliberately NO maneuver/budget/veto/approval
+  machinery: an avoidance burn doesn't mean anything for "your perigee is
+  too low," and building a second simplified-maneuver model (a reboost/
+  deorbit planner, with its own budget and approval semantics) was
+  explicitly scoped OUT of this phase, not overlooked - a real, separate
+  problem for a future phase if ever needed. The HOLD-action instruction
+  in _decision_rationale is now hazard-aware too, so a decay WARNING isn't
+  told to suggest a conjunction-flavored "along-track burn."
+- display.py / dashboard_data.py: both gained a decay-aware subject-line
+  branch (object_name + perigee, not a fallback to the raw event_id) -
+  same fix applied in both places since they duplicate this formatting
+  logic for their respective outputs (terminal vs. table).
+- scripts/run_demo.py (new step) and scripts/dashboard.py (new sidebar
+  button) both wired to the real pipeline, nothing bypassed.
+19 new tests: decay.py's real-data assessment (2, using the same real
+Vanguard 1/ISS fixtures test_orbital.py already uses), tle_source.py
+directly (5), DecayRiskAdapter (4), pipeline.py's new classification/
+analyze/decide branches (8, including a dedicated test proving the
+CRITICAL-decay guard doesn't KeyError trying to read object_a_id off
+decay-shaped raw_data), plus small display.py/dashboard_data.py coverage
+for the new subject-line branch. Suite: 149/149.
+Live-verified end-to-end against real local Ollama three times: a normal
+real decay screen (WATCH classification, accurate narration that
+correctly avoided stating a specific reentry date as instructed), a
+directly-constructed CRITICAL-range decay scenario (confirmed ABORT
+action, no maneuver_plan, sensible real narration with no
+conjunction-flavored language leaking in), and a full
+scripts/run_demo.py --auto run (confirmed correct integration into the
+10-step walkthrough and correct summary totals). Also live-verified via
+the dashboard: clicked "Screen for orbital decay risk" for real, and
+confirmed via the raw log file - not just the UI - that exactly 5 new
+real entries appeared with a fresh run_id, matching the button's own
+limit.
+One honest finding surfaced rather than tuned around: with the default
+group (cosmos-2251-debris) and these thresholds, real data currently
+tops out at WATCH (lowest real perigee found across the full 598-object
+group: ~313km) - the lowest-perigee fragments from the 2009 breakup have
+already decayed away over the intervening years, so WARNING/CRITICAL
+don't occur "on demand" from this specific real source right now. Same
+"real data rarely produces the most severe case live" pattern already
+established and accepted for CRITICAL conjunctions (see Phase 5) - no
+synthetic decay fixture was built to paper over this, unlike conjunctions
+where one was, to keep this phase's scope controlled; CRITICAL/WARNING
+classification is still directly covered by dedicated unit tests either way.

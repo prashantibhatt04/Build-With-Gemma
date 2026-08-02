@@ -34,6 +34,12 @@ through this system's unmodified pipeline shows it would have classified
 the real 584m SOCRATES prediction as CRITICAL, against a real event where
 that same warning existed but was never prioritized or acted on.
 
+Conjunctions aren't the only hazard it screens for: a second real hazard
+type — orbital decay/re-entry risk — screens a real CelesTrak debris
+group for objects with dangerously low perigee altitude, using Skyfield's
+own SGP4 model (no synthetic data, same deterministic-severity /
+Gemma-narrates design as conjunctions).
+
 **See [`DEMO.md`](DEMO.md) for a full stage-by-stage walkthrough**, or
 just run the guided demo script directly (see below). **See
 [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md)** for what was built in each
@@ -48,8 +54,14 @@ phase and why.
 - `src/orbital.py` — NORAD ID + TLE epoch parsing, two-pass closest-approach search
 - `src/maneuver.py` — simplified deterministic avoidance-maneuver math,
   independent verification, and delta-v budget tracking
-- `src/ingestion/celestrak_adapter.py` — live CelesTrak TLE fetch + real
-  cross-group orbital-mechanics conjunction screening (with disk caching)
+- `src/ingestion/tle_source.py` — shared CelesTrak TLE fetch + disk cache +
+  TLE-block parsing, used by both hazard adapters below
+- `src/ingestion/celestrak_adapter.py` — real cross-group orbital-mechanics
+  conjunction screening
+- `src/decay.py` — real decay/re-entry risk assessment, pulling perigee/
+  apogee altitude and BSTAR straight out of Skyfield's own SGP4 model
+- `src/ingestion/decay_adapter.py` — screens a real CelesTrak debris group
+  for low-perigee objects, ranked by decay risk
 - `src/ingestion/synthetic_adapter.py` — synthetic CRITICAL-range fixture
   (real data rarely produces one on demand), shared by the demo and dashboard
 - `src/ingestion/historical_adapter.py` — replays a real, documented past
@@ -159,11 +171,12 @@ streamlit run scripts/dashboard.py
 
 A live, browser-based mission-ops view over the exact same audit log the
 CLI writes to — metrics, a full decision table, a pending-approval inbox
-with real Approve/Reject buttons, and (for any real CelesTrak-sourced
-event) a real 3D orbit plot built by re-propagating live TLE data.
-Sidebar buttons can generate real new activity (a live CelesTrak scan,
-the synthetic CRITICAL scenario, or a historical replay) without leaving
-the browser. Opens at `http://localhost:8501` by default.
+with real Approve/Reject buttons, and (for any real conjunction event) a
+real 3D orbit plot built by re-propagating live TLE data. Sidebar buttons
+can generate real new activity (a live CelesTrak conjunction scan, a real
+decay/re-entry risk screen, the synthetic CRITICAL scenario, or a
+historical replay) without leaving the browser. Opens at
+`http://localhost:8501` by default.
 
 ## Run the test suite
 

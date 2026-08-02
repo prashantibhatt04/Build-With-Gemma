@@ -29,11 +29,13 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
     for entry in entries:
         raw = entry.telemetry.raw_data
         status = classify_decision_status(entry.decision)
-        subject = (
-            f"{raw['object_a_name']} vs {raw['object_b_name']}"
-            if "object_a_name" in raw and "object_b_name" in raw
-            else entry.telemetry.event_id
-        )
+        if "object_a_name" in raw and "object_b_name" in raw:
+            subject = f"{raw['object_a_name']} vs {raw['object_b_name']}"
+        elif "object_name" in raw:
+            # Decay hazard (Phase 14) - single object, not a pair.
+            subject = raw["object_name"]
+        else:
+            subject = entry.telemetry.event_id
         rows.append({
             "timestamp": entry.telemetry.timestamp,
             "event_id": entry.telemetry.event_id,
@@ -42,6 +44,7 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
             "action": entry.decision.action.value,
             "subject": subject,
             "min_distance_km": raw.get("min_distance_km"),
+            "perigee_altitude_km": raw.get("perigee_altitude_km"),
             "status": STATUS_LABELS.get(status, status),
             "rationale_source": entry.rationale_provenance.source,
             "human_reviewed": entry.human_reviewed,

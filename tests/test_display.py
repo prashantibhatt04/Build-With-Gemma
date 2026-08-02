@@ -201,6 +201,41 @@ def test_render_entry_handles_non_conjunction_event_without_crashing():
     assert "dummy-event-1" in output
 
 
+def test_render_entry_shows_object_name_and_perigee_for_decay_hazard():
+    """Decay hazard (Phase 14) events are single-object, not a pair - the
+    subject line should show the real object name + perigee, not fall
+    back to the raw event_id the way truly-generic telemetry does."""
+    console = Console(record=True, width=120)
+    telemetry = TelemetryEvent(
+        event_id="decay-33821", timestamp=datetime.now(timezone.utc),
+        source="celestrak-decay",
+        raw_data={
+            "object_id": "33821", "object_name": "COSMOS 2251 DEB",
+            "perigee_altitude_km": 415.9, "apogee_altitude_km": 462.3,
+            "bstar": 0.0008, "tle_epoch_age_hours": 12.0,
+        },
+    )
+    finding = AnomalyFinding(
+        event_id=telemetry.event_id, severity=Severity.WATCH,
+        description="Test decay finding.", confidence=0.9,
+    )
+    decision = Decision(
+        action="continue", rationale="Recommendation: continue.",
+        made_at=datetime.now(timezone.utc),
+    )
+    entry = DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=_provenance(),
+    )
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "COSMOS 2251 DEB" in output
+    assert "perigee 416km" in output
+    assert "decay-33821" not in output  # real subject shown, not the raw event_id
+
+
 def _plan() -> ManeuverPlan:
     return compute_avoidance_maneuver(
         object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0,

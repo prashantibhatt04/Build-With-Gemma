@@ -71,8 +71,12 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     if "object_a_name" in raw and "object_b_name" in raw:
         subject = f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
+    elif "object_name" in raw:
+        # Decay hazard (Phase 14) - single object, not a pair.
+        subject = f"{raw['object_name']} (perigee {raw['perigee_altitude_km']:.0f}km)"
     else:
-        # Non-conjunction telemetry (e.g. DummyAdapter) has no object pair.
+        # Non-conjunction, non-decay telemetry (e.g. DummyAdapter) has no
+        # object identity at all.
         subject = entry.telemetry.event_id
 
     console.print(badge, subject, "—", entry.decision.rationale)

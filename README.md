@@ -2,6 +2,9 @@
 
 *Build with Gemma: Triage in Light Speed*
 
+[![Tests](https://github.com/prashantibhatt04/Build-With-Gemma/actions/workflows/tests.yml/badge.svg)](https://github.com/prashantibhatt04/Build-With-Gemma/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An orbital collision/conjunction predictor: pulls real satellite/debris
 tracking data (TLEs) from CelesTrak — by default real crewed stations
 cross-screened against a real debris field, not just one group in
@@ -211,3 +214,7 @@ python scripts/approve_maneuver.py <event_id> <name> [--reject]  # resolve a pen
 - [`DEMO.md`](DEMO.md) — full stage-by-stage walkthrough with copy-pasteable commands
 - [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) — complete build history, phase by phase
 - [`KAGGLE_WRITEUP.md`](KAGGLE_WRITEUP.md) — submission writeup (architecture, Gemma usage, engineering hurdles, design choices)
+
+## License
+
+[MIT](LICENSE)

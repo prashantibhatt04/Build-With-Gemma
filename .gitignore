@@ -32,3 +32,11 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# Claude Code local config (dev-server launch config, machine-specific)
+.claude/
+
+# Local demo recordings (large binary artifacts, not source)
+local-demo.cast
+local-demo.gif
+local-demo.mp4

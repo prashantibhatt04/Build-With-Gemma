@@ -410,6 +410,24 @@ here's what each one means, for reference:
 | `historical_event` / `historical_source` / `historical_actual_outcome` | Only present for historical replays — the citation and real-world outcome travel with the record itself, not just in documentation |
 | `perigee_altitude_km` / `apogee_altitude_km` / `bstar` | Only present for decay-hazard events — real orbital elements Skyfield's SGP4 model already parses, not a separate TLE parser |
 
+## Repo hygiene: CI, license, and cleanup
+
+Not a pipeline feature — this is about the repo itself now that the
+submission is done. Three small, mechanical changes:
+
+- **A GitHub Actions workflow** (`.github/workflows/tests.yml`) now runs
+  the full pytest suite on every push and pull request to `main`. Nothing
+  ran the tests automatically before this; a broken change could only
+  have been caught by remembering to run `pytest` locally.
+- **`.gitignore` now covers the local demo recordings and Claude Code's
+  own dev-server launch config** (`local-demo.cast`/`.gif`/`.mp4`,
+  `.claude/`) — these were previously just left untracked by discipline
+  rather than by the repo actually saying so, which meant nothing stopped
+  a future `git add -A` from accidentally picking them up.
+- **README now links to the existing `LICENSE` file** (MIT, already
+  present since the initial commit but never referenced from anywhere)
+  and shows a live test-status badge.
+
 ## Summary
 
 - **Real data, real physics.** Live CelesTrak TLEs, Skyfield/SGP4

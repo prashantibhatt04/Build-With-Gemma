@@ -91,7 +91,10 @@ class ManeuverApproval(BaseModel):
 
     mode: Literal["autonomous", "human"]
     approved: bool
-    approved_by: Optional[str] = None  # None for autonomous approvals
+    # None for a physics-affirmed autonomous approval (no human involved);
+    # identifies Gemma when mode="autonomous" but it vetoed the maneuver
+    # (see pipeline._maneuver_veto_check); the human's name when mode="human".
+    approved_by: Optional[str] = None
     approved_at: datetime
     reason: str
 

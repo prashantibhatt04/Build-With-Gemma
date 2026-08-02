@@ -72,8 +72,18 @@ class GemmaClient:
                 text = fallback_call(prompt, system, timeout)
                 self.last_backend_used = fallback_backend
                 return text
-            except GemmaClientError:
-                pass  # both backends failed - raise the primary's error below
+            except GemmaClientError as fallback_error:
+                # Both failed - raise a combined error naming both reasons.
+                # Raising just last_error (the primary's) here would silently
+                # discard the fallback's actual failure reason, which is
+                # usually the more useful one to see: the primary is often
+                # deliberately/expectedly down (e.g. this project's own
+                # failover demo step), so it's the fallback's error that
+                # actually explains why nothing worked.
+                raise GemmaClientError(
+                    f"Both backends unreachable - {primary_backend}: {last_error}; "
+                    f"{fallback_backend}: {fallback_error}"
+                ) from fallback_error
 
         raise last_error
 

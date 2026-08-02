@@ -104,6 +104,11 @@ def test_extract_final_answer_falls_back_to_last_line_if_nothing_substantive():
         # Chain-of-thought before the real verdict - last token found wins,
         # same philosophy as _extract_final_answer.
         ("Let me think... maybe GO? Actually, NO-GO given the risk.", False),
+        # Regression test: a clear leading GO must NOT be overridden by a
+        # later NEGATED mention of "NO-GO" in the model's own explanation -
+        # the first, authoritative token wins over a naive last-match scan.
+        ("GO - the numbers check out. This is clearly not a NO-GO situation, so proceed.", True),
+        ("NO-GO - this is not a situation where GO makes sense.", False),
     ],
 )
 def test_parse_veto_verdict(text, expected):
@@ -138,8 +143,10 @@ class FakeGemmaClient:
 class FailingGemmaClient:
     """Duck-types GemmaClient but always raises, to test fallback paths."""
 
-    def __init__(self):
-        self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend="ollama")
+    def __init__(self, gemma_backend: str = "ollama", gemma_model_api: str = "fake-model-api"):
+        self.settings = SimpleNamespace(
+            gemma_model="fake-model", gemma_backend=gemma_backend, gemma_model_api=gemma_model_api,
+        )
 
     def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
         raise GemmaClientError("simulated failure")
@@ -466,6 +473,25 @@ def test_decide_node_falls_back_when_gemma_fails():
     assert provenance.source == "fallback"
     assert provenance.model_used == "fake-model"
     assert provenance.latency_ms >= 0
+
+
+def test_fallback_provenance_reports_hosted_model_when_configured_backend_is_api():
+    """Regression test: the fallback path used to unconditionally report
+    gemma_model (the Ollama tag) regardless of which backend was actually
+    configured - so a cloud-only deployment's fallback entries claimed
+    "gemma4:e4b" responded, when nothing running that tag was ever
+    involved. Should report gemma_model_api instead when GEMMA_BACKEND=api."""
+    event = _make_conjunction_event(50.0)  # WATCH - no CRITICAL/veto complexity needed
+    finding = _make_finding(Severity.WATCH, event)
+    decide_node = make_decide_node(FailingGemmaClient(gemma_backend="api", gemma_model_api="hosted-model-x"))
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    provenance = result_state["rationale_provenance"]
+    assert provenance.source == "fallback"
+    assert provenance.model_used == "hosted-model-x"
 
 
 def test_decide_node_gemma_veto_blocks_autonomous_maneuver():

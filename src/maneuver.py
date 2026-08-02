@@ -38,6 +38,19 @@ VELOCITY_MARGIN_KM_PER_KM_S = 1.0
 # rather than derived physics.
 ASSUMED_MANEUVER_LEAD_TIME_S = 6 * 60 * 60  # 6 hours
 
+# verify_maneuver's distance recompute (below) is mathematically guaranteed
+# to reproduce target_clearance_km exactly whenever it's called with the
+# same min_distance_km the plan was built from - the two formulas are
+# algebraic inverses of each other, not independent derivations - so on its
+# own it can only ever catch an implementation bug (the two formulas
+# drifting out of sync), never an actually-bad maneuver. This bound adds a
+# check that CAN genuinely fail: a real collision-avoidance burn is
+# typically well under a few m/s, so anything demanding more than this is a
+# sign of implausible/corrupted input (e.g. a garbage min_distance_km),
+# not a maneuver to wave through as "safe" just because the arithmetic
+# is self-consistent.
+MAX_PLAUSIBLE_DELTA_V_M_S = 50.0
+
 
 def compute_avoidance_maneuver(
     object_a: str,
@@ -66,24 +79,35 @@ def compute_avoidance_maneuver(
 
 
 def verify_maneuver(original_min_distance_km: float, maneuver_plan: ManeuverPlan) -> VerifiedClearance:
-    """Independently re-derive the post-maneuver miss distance and confirm
-    it clears CRITICAL_THRESHOLD_KM.
+    """Re-derives the post-maneuver miss distance and checks it's both
+    self-consistent and plausible before calling it cleared. Two distinct
+    checks, and only one of them is actually independent:
 
-    orbital.find_closest_approach's two-pass coarse/fine search exists
-    because a real trajectory's closest approach is nonlinear and has to be
-    numerically bracketed then refined. This function has no real
-    trajectory to search - compute_avoidance_maneuver's displacement model
-    is linear in time, so there's nothing for a second refinement pass to
-    improve on. What it reuses "conceptually" instead is the same
-    discipline of not trusting a single forward calculation: rather than
-    just echoing maneuver_plan.target_clearance_km (the number the plan was
-    *solved for*), this recomputes the resulting distance forward from the
-    plan's delta-v and the same assumed lead time, as an independent
-    cross-check that the two are consistent.
+    1. Recompute the resulting distance forward from the plan's delta-v
+       and the same assumed lead time, rather than just echoing
+       maneuver_plan.target_clearance_km (the number the plan was *solved
+       for*). Honest caveat: since compute_avoidance_maneuver's math is
+       linear, this recompute is the algebraic inverse of the original
+       solve - given the same original_min_distance_km, it is
+       *mathematically guaranteed* to land exactly on target_clearance_km.
+       That makes it a regression/consistency guard (it would catch the
+       two formulas drifting out of sync after a future edit), not an
+       independent safety verification on its own.
+    2. MAX_PLAUSIBLE_DELTA_V_M_S (below) is the check that's actually
+       independent - it uses a real-world plausibility bound that isn't
+       already implied by the plan's own arithmetic, so unlike
+       (1), it CAN fail: an implausibly large required delta-v, or a
+       nonsensical original_min_distance_km, means the input was probably
+       bad, and this refuses to call that "cleared" just because the
+       recompute is self-consistent.
     """
     displacement_km = (maneuver_plan.magnitude_delta_v * ASSUMED_MANEUVER_LEAD_TIME_S) / 1000
     new_min_distance_km = original_min_distance_km + displacement_km
-    cleared = new_min_distance_km > CRITICAL_THRESHOLD_KM
+    plausible = (
+        original_min_distance_km > 0
+        and maneuver_plan.magnitude_delta_v <= MAX_PLAUSIBLE_DELTA_V_M_S
+    )
+    cleared = plausible and new_min_distance_km > CRITICAL_THRESHOLD_KM
 
     return VerifiedClearance(
         new_min_distance_km=new_min_distance_km,

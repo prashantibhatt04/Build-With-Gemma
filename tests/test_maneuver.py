@@ -6,6 +6,7 @@ import pytest
 
 from src.maneuver import (
     CRITICAL_THRESHOLD_KM,
+    MAX_PLAUSIBLE_DELTA_V_M_S,
     DeltaVBudgetTracker,
     compute_avoidance_maneuver,
     verify_maneuver,
@@ -62,10 +63,45 @@ def test_verify_maneuver_reports_cleared_with_new_distance():
     assert isinstance(verified, VerifiedClearance)
     assert verified.cleared is True
     assert verified.new_min_distance_km > CRITICAL_THRESHOLD_KM
-    # Independently re-derived forward from delta-v, so it should agree
-    # with (not just echo) the plan's own solved-for target.
+    # Re-derived forward from delta-v using the same linear model the plan
+    # was solved from - given the same original_min_distance_km, this is
+    # mathematically guaranteed to land exactly on target_clearance_km (see
+    # verify_maneuver's docstring for why that's a consistency guard, not
+    # independent verification on its own - MAX_PLAUSIBLE_DELTA_V_M_S below
+    # is the part of the check that's actually independent).
     assert verified.new_min_distance_km == pytest.approx(plan.target_clearance_km)
     assert (datetime.now(timezone.utc) - verified.verified_at).total_seconds() < 5
+
+
+def test_verify_maneuver_flags_implausibly_large_delta_v_as_not_cleared():
+    """The distance recompute alone can never independently catch a bad
+    maneuver (see docstring/comment above) - this proves the ADDED
+    plausibility bound actually can fail. Plan constructed directly,
+    bypassing compute_avoidance_maneuver, to simulate a maneuver_plan that
+    reached verify_maneuver already corrupted (e.g. from a bug elsewhere)."""
+    implausible_plan = ManeuverPlan(
+        direction="radial-outward",
+        magnitude_delta_v=MAX_PLAUSIBLE_DELTA_V_M_S + 1,
+        target_clearance_km=30.0,
+        computed_at=datetime.now(timezone.utc),
+    )
+
+    verified = verify_maneuver(2.0, implausible_plan)
+
+    assert verified.cleared is False
+    # Still reports the (now-meaningless) recomputed distance - cleared is
+    # what callers must check, not new_min_distance_km's sign alone.
+    assert verified.new_min_distance_km > CRITICAL_THRESHOLD_KM
+
+
+def test_verify_maneuver_flags_nonpositive_original_distance_as_not_cleared():
+    plan = compute_avoidance_maneuver(
+        object_a="a", object_b="b", min_distance_km=2.0, relative_velocity_km_s=3.0,
+    )
+
+    verified = verify_maneuver(0.0, plan)
+
+    assert verified.cleared is False
 
 
 @pytest.mark.parametrize("original_min_distance_km", [0.1, 1.0, 2.5, 4.9])

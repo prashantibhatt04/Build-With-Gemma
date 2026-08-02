@@ -198,7 +198,12 @@ def _step_failover(ctx: DemoContext) -> None:
     )
     client = GemmaClient(settings=broken)
     try:
-        text = client.generate(prompt="Reply with the single word: ok", timeout=15)
+        # The broken local backend fails near-instantly (connection
+        # refused), so this timeout only bounds the real fallback (cloud)
+        # attempt - and the hosted API's latency varies a lot in practice
+        # (observed 2-35s+ for the same trivial prompt), so a short
+        # timeout here risks reporting a working fallback as unreachable.
+        text = client.generate(prompt="Reply with the single word: ok", timeout=45)
         ctx.console.print(
             f"Local Ollama was intentionally made unreachable for this step. "
             f"Backend that actually answered: [bold]{client.last_backend_used}[/bold]"

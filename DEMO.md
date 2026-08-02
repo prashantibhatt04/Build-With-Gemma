@@ -491,7 +491,7 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 116 tests, all green - orbital math (including the
+**What it proves:** 123 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing,
 the CelesTrak adapter's cross-group screening (mocked network), maneuver
 math, budget tracking, Gemma client retry/fallback (mocked), Gemma's

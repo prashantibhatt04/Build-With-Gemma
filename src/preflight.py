@@ -51,7 +51,11 @@ def check_log_dir_writable(settings: Settings) -> CheckResult:
 def check_gemma_reachable(settings: Settings) -> CheckResult:
     client = GemmaClient(settings=settings)
     try:
-        client.generate(prompt="Reply with the single word: ok", timeout=15)
+        # The hosted API's latency varies a lot in practice (observed
+        # 2-35s+ for the same trivial prompt) - too short a timeout here
+        # reports a perfectly reachable backend as "unreachable" just
+        # because it happened to be slow on this one call.
+        client.generate(prompt="Reply with the single word: ok", timeout=45)
     except GemmaClientError as exc:
         return CheckResult("Gemma reachable", False, str(exc))
 

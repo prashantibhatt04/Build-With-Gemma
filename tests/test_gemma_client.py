@@ -63,14 +63,23 @@ def test_generate_raises_primary_error_if_other_backend_unconfigured():
     mock_api.assert_not_called()
 
 
-def test_generate_raises_primary_error_if_fallback_also_fails():
+def test_generate_raises_combined_error_naming_both_failures_if_fallback_also_fails():
+    """Regression test: generate() used to raise ONLY the primary's error
+    when both backends failed, silently discarding the fallback's actual
+    failure reason - usually the more useful one, since the primary is
+    often deliberately/expectedly down (e.g. this project's own failover
+    demo step intentionally breaks the local backend to test the cloud
+    fallback; if the cloud call then also failed for a real reason, that
+    reason was invisible)."""
     client = GemmaClient(settings=_settings(gemma_backend="ollama"))
 
     with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("ollama down")), \
          patch.object(client, "_generate_hosted_api", side_effect=GemmaClientError("api also down")):
-        with pytest.raises(GemmaClientError, match="ollama down"):
+        with pytest.raises(GemmaClientError) as exc_info:
             client.generate(prompt="test prompt")
 
+    assert "ollama down" in str(exc_info.value)
+    assert "api also down" in str(exc_info.value)
     assert client.last_backend_used is None
 
 

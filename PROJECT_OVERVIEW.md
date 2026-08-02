@@ -92,9 +92,15 @@ brought in **after** severity and action are already decided, to turn the
 raw numbers into a plain-language summary a person can actually read.
 
 For a CRITICAL conjunction specifically, a simplified avoidance maneuver
-(direction + delta-v) is computed deterministically, then **independently
-re-verified** by re-deriving the resulting clearance forward from that
-delta-v — not just trusting the number it was solved for.
+(direction + delta-v) is computed deterministically, then checked twice
+before being called verified: re-deriving the resulting clearance forward
+from that delta-v (not just trusting the number it was solved for), and
+a plausibility bound on the delta-v itself. Only the second one is
+actually independent — a QA pass found the first is the algebraic
+inverse of the original solve, so it's mathematically guaranteed to
+agree and can only ever catch an implementation bug, not a bad maneuver.
+See `src/maneuver.py:verify_maneuver`'s docstring and `PHASE_PROGRESS.md`'s
+QA pass entry.
 
 **Why there's a delta-v budget.** A real spacecraft doesn't have
 unlimited fuel — it can't fire an avoidance maneuver every time one is
@@ -349,12 +355,15 @@ here's what each one means, for reference:
   The 2009 Iridium 33/Cosmos 2251 collision — a real, documented triage
   failure — classifies as CRITICAL through this system's ordinary,
   unmodified severity threshold, using the real 584m SOCRATES prediction.
-- **Verified, not just built.** 116 automated tests, plus every major path
+- **Verified, not just built.** 123 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
   browser against the real accumulated audit log, including clicking a
-  real Approve button and confirming the resulting write to disk.
+  real Approve button and confirming the resulting write to disk. On top
+  of that, a full independent QA/gap-analysis/fresh-eyes review pass
+  found and fixed 7 real issues after everything above was already
+  "done" - see `PHASE_PROGRESS.md`'s QA pass entry.
 
 Every phase originally scoped for this submission is now built. Further
 ideas (a visual orbit plot, multi-hazard triage beyond conjunctions) are

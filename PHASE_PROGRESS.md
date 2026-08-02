@@ -447,3 +447,122 @@ demo step's own panel (title, citation, real outcome) and the persisted
 source="historical-replay" field both make the historical framing clear
 regardless, so this wasn't judged worth adding replay-specific prompt
 branching for.
+
+## QA / gap-analysis / fresh-eyes review pass
+Status: done
+Every phase (0-12) was already "done" - this was a deliberate second pass
+treating that as a starting point, not a conclusion: full manual QA (live
+demo runs on both backends, live dashboard click-through), a gap analysis
+against docs and repo hygiene, and an independent fresh-eyes code review
+by an agent with no memory of this project's history, briefed only on
+what the system is supposed to do. Found and fixed 7 real issues,
+verified 4 more were clean.
+
+**1. `verify_maneuver` was a mathematical tautology, not an independent
+check (found by the fresh-eyes review).** `compute_avoidance_maneuver`
+solves `delta_v` from `target_clearance_km - min_distance_km`;
+`verify_maneuver` recomputed `new_min_distance_km` from that same
+`delta_v` - the algebraic inverse of the original solve. Given the same
+`min_distance_km` (which every real call site always passes), the two are
+*mathematically guaranteed* to agree - `cleared` could never be `False`
+for any CRITICAL-range input, since `target_clearance_km` is always
+`>= 30km`, comfortably above the 5km threshold. This directly contradicted
+repeated "independently re-verified, not just trusting the number it was
+solved for" language across README/PROJECT_OVERVIEW/KAGGLE_WRITEUP, and
+mattered more given Phase 9 feeds this "verified" number to Gemma's veto
+prompt as evidence of safety. Fixed with a check that's actually
+independent: `MAX_PLAUSIBLE_DELTA_V_M_S` (50 m/s) - a real-world
+plausibility bound the original solve never touched, so it genuinely can
+fail (e.g. a corrupted/nonsensical `min_distance_km`), unlike the
+recompute (kept - it's still a real regression guard against the two
+formulas drifting apart after a future edit, just not independent proof
+of safety on its own). `verify_maneuver`'s docstring, the test that
+asserted the tautology without naming it as one, and all three docs'
+"independently re-verified" language were all corrected to be honest
+about which part is which. 2 new tests (implausible delta-v, nonpositive
+distance both now correctly fail).
+
+**2. `CelesTrakAdapter` event_ids could collide across separate real
+scans (found by the fresh-eyes review).** Unlike its two siblings
+(`SyntheticCriticalAdapter`, `HistoricalReplayAdapter` - both fixed for
+this during their own phases), `CelesTrakAdapter`'s event_id was derived
+only from the object pair (`conj-{a}-{b}`), with no per-scan uniqueness.
+The same real object pair very plausibly stays the closest pair across
+two scans within the same 1h TLE cache window (e.g. two dashboard clicks
+in a row) - and `DecisionLogger.find_entry`/`mark_reviewed`/
+`approve_maneuver` all match an event_id's FIRST logged occurrence, so a
+second scan's genuinely-pending entry could be indistinguishable from an
+already-resolved earlier one, silently misdirecting an Approve/Reject
+click to the wrong entry. Fixed with the same `run_id` treatment as its
+siblings - auto-generated per adapter instance if not given explicitly,
+so every caller gets the fix by default with no code changes required at
+the call sites. 2 new tests.
+
+**3. Gemma's veto verdict could be misread from a negated later mention
+(found by the fresh-eyes review).** `_parse_veto_verdict` took the LAST
+GO/NO-GO token found anywhere in the response. A response that correctly
+leads with "GO" (as instructed) but later reasons "...this is clearly
+not a NO-GO situation, so proceed" would have that later "NO-GO"
+substring win, misreading an affirmed maneuver as vetoed - undercutting
+the veto prompt's own instruction not to second-guess a maneuver the
+numbers already show is safe. Fixed by checking the FIRST token
+authoritatively (the prompt instructs the verdict to come first) before
+falling back to the existing last-match scan for responses that don't
+lead with a clear token. 2 new regression tests.
+
+**4. Fallback provenance reported the wrong model for the api backend
+(found by the fresh-eyes review).** `_call_gemma_with_provenance`'s
+except-branch unconditionally set `model_used = client.settings.gemma_model`
+(the Ollama tag) even when `GEMMA_BACKEND=api` and both backends had
+failed - a cloud-only deployment's fallback log entries would claim
+"gemma4:e4b" responded when nothing running that tag was ever involved.
+Fixed to report `gemma_model_api` when the configured backend is "api".
+1 new test.
+
+**5. Stale field comment (found by the fresh-eyes review).**
+`ManeuverApproval.approved_by`'s inline comment still said "None for
+autonomous approvals" - no longer true since Phase 9, where an autonomous
+Gemma veto sets `approved_by="Gemma (autonomous safety review)"`.
+Corrected.
+
+**6. Two hardcoded 15s Gemma timeouts were too short for real hosted-API
+latency (found by manual QA, not the fresh-eyes review - it correctly
+avoided making real network calls).** Running the full cloud-backend demo
+live surfaced `preflight.check_gemma_reachable` and
+`run_demo._step_failover` both using `timeout=15`. Measured directly: the
+same trivial prompt against the real hosted API took anywhere from ~2s to
+35s+ across repeated calls during this session - a real key, correctly
+configured, with a 15s timeout would intermittently and misleadingly
+report "unreachable." Bumped both to 45s. Not a correctness bug in the
+sense of wrong output, but a real flakiness/false-negative risk a judge
+running this demo could hit through no fault of their own setup.
+
+**7. `GemmaClient.generate()` silently discarded the real reason a
+fallback attempt failed (found chasing #6 live).** When both backends
+failed, the code raised only the PRIMARY's error and discarded the
+fallback's via a bare `except GemmaClientError: pass`. In practice the
+primary is often *expected* to be down (e.g. this project's own failover
+demo step deliberately breaks it) - so it's almost always the fallback's
+error that actually explains a real failure, and it was invisible. Caught
+live: a real run showed "Both backends unreachable" with only the
+intentionally-broken local connection's error visible; the actual cause
+(a transient 500 from the hosted API) was silently dropped. Fixed to
+raise a combined error naming both backends' actual failures. 1 test
+strengthened into an explicit regression test for this exact behavior.
+
+**Verified clean, not just assumed:** no TODO/FIXME/XXX anywhere in
+src/scripts/tests; pyflakes reports zero unused imports or undefined
+names across the whole codebase; every file path referenced across all 5
+docs actually exists; `.env.example` exactly matches every env var
+`config.py` actually reads (no more, no less); no secrets anywhere in
+git history (re-confirmed); `NOTES_FOR_MORNING.md` untouched this
+session, consistent with it being an intentionally-preserved historical
+record; LICENSE unmodified.
+
+Full local-backend and cloud-backend `scripts/run_demo.py --auto` runs
+were executed live end-to-end as part of this pass (not just unit
+tests) - the cloud run is what surfaced #6 and #7. The dashboard was
+re-launched and its Approve, Reject, and "Replay historical event"
+controls were each exercised for real against the live accumulated audit
+log, with the resulting writes confirmed directly against the raw log
+file afterward, not just trusted from the UI. Suite: 123/123.

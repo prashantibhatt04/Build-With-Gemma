@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
@@ -94,6 +95,7 @@ class CelesTrakAdapter(DataSourceAdapter):
         lookahead_hours: int = 48,
         cache_dir: Path | str = DEFAULT_CACHE_DIR,
         exclude_within_group: Sequence[str] = DEFAULT_EXCLUDE_WITHIN_GROUP,
+        run_id: Optional[str] = None,
     ):
         self.groups = list(groups)
         self.sample_size_per_group = sample_size_per_group
@@ -102,6 +104,17 @@ class CelesTrakAdapter(DataSourceAdapter):
         self.lookahead_hours = lookahead_hours
         self.cache_dir = Path(cache_dir)
         self.exclude_within_group = set(exclude_within_group)
+        # Included in every event_id this instance produces (see
+        # fetch_batch) - the SAME real conjunction (same object pair) can
+        # easily recur across separate scans (e.g. two dashboard clicks
+        # within the same 1h TLE cache window), and DecisionLogger's
+        # find_entry/mark_reviewed/approve_maneuver match an event_id's
+        # FIRST logged occurrence - without this, a second scan's entry
+        # would be indistinguishable from an already-resolved earlier one,
+        # so approving/reviewing "this scan's" pending entry could silently
+        # resolve a stale one instead. Same fix already applied to
+        # SyntheticCriticalAdapter and HistoricalReplayAdapter.
+        self.run_id = run_id or uuid.uuid4().hex[:8]
         self.ts = load.timescale()
         # Populated by _rank_conjunctions() - lets callers (e.g.
         # scripts/run_demo.py) report what was actually screened without
@@ -238,7 +251,7 @@ class CelesTrakAdapter(DataSourceAdapter):
         now = datetime.now(timezone.utc)
         return [
             TelemetryEvent(
-                event_id=f"conj-{c['object_a_id']}-{c['object_b_id']}",
+                event_id=f"conj-{c['object_a_id']}-{c['object_b_id']}-{self.run_id}",
                 timestamp=now,
                 source="celestrak",
                 raw_data=c,

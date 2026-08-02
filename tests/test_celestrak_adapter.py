@@ -83,6 +83,41 @@ def test_fetch_batch_returns_results_sorted_by_distance_ascending(mock_get, tmp_
 
 
 @patch("src.ingestion.celestrak_adapter.requests.get")
+def test_fetch_batch_event_ids_are_unique_across_separate_scans(mock_get, tmp_path):
+    """Regression test: the SAME real object pair (identical TLEs -> same
+    closest-approach result here) previously produced the IDENTICAL
+    event_id on every scan. DecisionLogger.find_entry/mark_reviewed/
+    approve_maneuver match an event_id's FIRST logged occurrence, so a
+    second scan's entry was indistinguishable from an already-resolved
+    earlier one - approving "this scan's" pending entry could silently
+    resolve a stale one instead. Each CelesTrakAdapter instance now gets
+    its own run_id, matching SyntheticCriticalAdapter/HistoricalReplayAdapter."""
+    mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)
+    first_scan = CelesTrakAdapter(
+        groups=["test-group"], sample_size_per_group=3, cache_dir=tmp_path,
+    ).fetch_batch(limit=3)
+    second_scan = CelesTrakAdapter(
+        groups=["test-group"], sample_size_per_group=3, cache_dir=tmp_path,
+    ).fetch_batch(limit=3)
+
+    first_ids = {e.event_id for e in first_scan}
+    second_ids = {e.event_id for e in second_scan}
+    assert first_ids.isdisjoint(second_ids)
+
+
+@patch("src.ingestion.celestrak_adapter.requests.get")
+def test_fetch_batch_respects_explicit_run_id(mock_get, tmp_path):
+    mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)
+    adapter = CelesTrakAdapter(
+        groups=["test-group"], sample_size_per_group=3, cache_dir=tmp_path, run_id="fixed-id",
+    )
+
+    events = adapter.fetch_batch(limit=3)
+
+    assert all(e.event_id.endswith("-fixed-id") for e in events)
+
+
+@patch("src.ingestion.celestrak_adapter.requests.get")
 def test_fetch_batch_screens_across_multiple_groups(mock_get, tmp_path):
     """Phase 10: the whole point of multiple groups is cross-group
     screening (e.g. real assets vs. real debris) - confirm pairs spanning

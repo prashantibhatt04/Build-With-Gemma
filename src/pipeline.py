@@ -116,7 +116,15 @@ def _call_gemma_with_provenance(
     except GemmaClientError:
         text = fallback_text
         source = "fallback"
-        model_used = client.settings.gemma_model
+        # Report the model for whichever backend was actually CONFIGURED
+        # (both attempts failed, so nothing "responded", but the fallback
+        # text is standing in for that backend specifically) - not always
+        # gemma_model, which is only the Ollama tag and is simply wrong
+        # for a fallback that occurred while GEMMA_BACKEND=api.
+        if getattr(client.settings, "gemma_backend", None) == "api":
+            model_used = getattr(client.settings, "gemma_model_api", None) or client.settings.gemma_model
+        else:
+            model_used = client.settings.gemma_model
     latency_ms = (time.monotonic() - start) * 1000
     provenance = GemmaProvenance(
         source=source, model_used=model_used, latency_ms=latency_ms,
@@ -418,14 +426,28 @@ _VETO_VERDICT_RE = re.compile(r"\bNO[\s-]?GO\b|\bGO\b", re.IGNORECASE)
 
 
 def _parse_veto_verdict(text: str) -> Optional[bool]:
-    """Scans the full veto-check response for GO/NO-GO tokens and returns
-    the LAST one found - mirroring this project's other chain-of-thought
-    handling (_extract_final_answer): a model that reasons before its
-    verdict tends to converge on the real answer last, even though this
-    prompt asks for the verdict first. Returns None if no verdict token
-    appears anywhere - the caller treats that as a fail-safe NO-GO, not a
-    free pass."""
-    matches = _VETO_VERDICT_RE.findall(text)
+    """Parses a GO/NO-GO verdict from a veto-check response.
+
+    Checks the FIRST token authoritatively before falling back to a scan:
+    the prompt instructs the verdict to come first, and scanning the whole
+    response for the LAST match can misread a later NEGATED mention of the
+    other token - e.g. "GO - ... this is clearly not a NO-GO situation, so
+    proceed." leads with an affirmed GO, but naively taking the last match
+    anywhere in the text would find the "NO-GO" substring inside that
+    later sentence and misread it as a veto. Falls back to scanning for
+    the LAST match only when the response doesn't lead with a clear token
+    - mirroring this project's other chain-of-thought handling
+    (_extract_final_answer): a model that reasons before its verdict tends
+    to converge on the real answer last, even though this prompt asks for
+    the verdict first. Returns None if no verdict token appears anywhere -
+    the caller treats that as a fail-safe NO-GO, not a free pass.
+    """
+    stripped = text.strip()
+    first_token = _VETO_VERDICT_RE.match(stripped)
+    if first_token:
+        return not first_token.group(0).upper().startswith("NO")
+
+    matches = _VETO_VERDICT_RE.findall(stripped)
     if not matches:
         return None
     return not matches[-1].upper().startswith("NO")

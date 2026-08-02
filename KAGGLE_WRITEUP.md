@@ -238,10 +238,17 @@ a re-derived one, and clearly labeled as such (`source=
   is designed so Gemma can only ever narrow what's already been verified
   safe, never widen it: it can say no to a maneuver the physics cleared,
   it can never say yes to one the physics didn't.
-- **A maneuver is independently re-verified, not just trusted.** The
-  verification step re-derives the resulting clearance forward from the
-  computed delta-v, rather than echoing the number the plan was
-  algebraically solved for - a deliberate cross-check, not a rubber stamp.
+- **A maneuver is re-verified, not just trusted - and that verification
+  is honest about what it can and can't catch.** The re-check re-derives
+  the resulting clearance forward from the computed delta-v, rather than
+  echoing the number the plan was algebraically solved for - but a QA
+  pass found that recompute is the algebraic inverse of the original
+  solve, so on its own it's mathematically guaranteed to agree (a
+  regression guard against the two formulas drifting apart, not
+  independent proof of safety). Fixed by adding a genuinely independent
+  plausibility bound (`MAX_PLAUSIBLE_DELTA_V_M_S`) that uses information
+  the original solve never touched, so it actually can fail - see
+  `PHASE_PROGRESS.md`'s QA pass entry.
 - **A limited delta-v budget prevents unlimited silent autonomy.** Even
   in the fully autonomous (local) path, the system can't execute an
   unbounded number of maneuvers - when the budget runs out, it says so
@@ -281,7 +288,7 @@ open-ended, not committed next steps.
 
 ## Verification
 
-116 automated tests (network-free, Gemma calls mocked, CelesTrak network
+123 automated tests (network-free, Gemma calls mocked, CelesTrak network
 calls mocked, the dashboard tested via Streamlit's own AppTest harness)
 cover orbital math (including the decomposed coarse/fine search used for
 scalable screening), severity/confidence derivation, maneuver math,

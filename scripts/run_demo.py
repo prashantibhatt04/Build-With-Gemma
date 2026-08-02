@@ -39,6 +39,7 @@ from src.display import render_entries
 from src.gemma_client import GemmaClient
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
+from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
@@ -194,6 +195,27 @@ def _step_decay_risk(ctx: DemoContext) -> None:
         "specific real scan finds on any given run - same 'real data rarely "
         "produces the most severe case on demand' pattern as CRITICAL "
         "conjunctions."
+    )
+    ctx.all_entries.extend(entries)
+
+
+def _step_attitude(ctx: DemoContext) -> None:
+    run_id = uuid.uuid4().hex[:8]
+    adapter = SyntheticAttitudeAdapter(run_id=run_id)
+    entries = run_once(adapter=adapter, limit=4)
+    render_entries(entries, console=ctx.console)
+    severities = ", ".join(f"{e.finding.severity.value.upper()}" for e in entries)
+    ctx.console.print(
+        f"\nFour synthetic pointing-error readings spanning the full "
+        f"severity range: {severities}. Unlike conjunctions and decay "
+        "risk, there is no real public data source for spacecraft "
+        "attitude/pointing status (TLEs only encode orbital position/"
+        "velocity, never orientation) - so this hazard type is "
+        "necessarily synthetic-only, clearly labeled via its source "
+        "field, not just 'rare on demand' like a CRITICAL conjunction. "
+        "No maneuver machinery applies here either - notice the CRITICAL "
+        "reading still gets a real deterministic action and real Gemma "
+        "narration, same as CRITICAL decay risk."
     )
     ctx.all_entries.extend(entries)
 
@@ -454,6 +476,28 @@ STEPS: list[Step] = [
             "else, just no maneuver plan."
         ),
         action=_step_decay_risk,
+    ),
+    Step(
+        phase="Phase 18",
+        title="A third hazard type: attitude / pointing loss (synthetic-only)",
+        explanation=(
+            "A third hazard type, same idea-agnostic pipeline - but a "
+            "genuinely different situation from conjunctions and decay "
+            "risk: there is NO real, publicly-fetchable data source for "
+            "spacecraft ATTITUDE. TLEs encode only orbital position and "
+            "velocity, never orientation, and real attitude telemetry is "
+            "normally proprietary to each spacecraft's own operator. "
+            "That's a structural absence, not 'real data is rare on "
+            "demand' the way a CRITICAL conjunction is - so this hazard "
+            "type is necessarily synthetic-only, clearly labeled via its "
+            "source field. Four synthetic readings span the full "
+            "NOMINAL/WATCH/WARNING/CRITICAL range on purpose, since "
+            "(like decay) there's no maneuver machinery here to demo "
+            "budget depletion across repeated CRITICAL events - a real "
+            "deterministic classification and real Gemma narration "
+            "still apply, same as every other hazard type."
+        ),
+        action=_step_attitude,
     ),
     Step(
         phase="Phase 4",

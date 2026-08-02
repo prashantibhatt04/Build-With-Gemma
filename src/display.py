@@ -71,12 +71,19 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     if "object_a_name" in raw and "object_b_name" in raw:
         subject = f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
-    elif "object_name" in raw:
-        # Decay hazard (Phase 14) - single object, not a pair.
+    elif "perigee_altitude_km" in raw:
+        # Decay hazard (Phase 14) - single object, not a pair. Checked by
+        # its own distinguishing field, not just "object_name", since the
+        # attitude hazard (Phase 18) also has a single "object_name" but a
+        # different shape entirely.
         subject = f"{raw['object_name']} (perigee {raw['perigee_altitude_km']:.0f}km)"
+    elif "pointing_error_deg" in raw:
+        # Attitude/pointing-loss hazard (Phase 18) - synthetic-only, see
+        # src/ingestion/attitude_adapter.py's module docstring for why.
+        subject = f"{raw['object_name']} (pointing error {raw['pointing_error_deg']:.0f}°)"
     else:
-        # Non-conjunction, non-decay telemetry (e.g. DummyAdapter) has no
-        # object identity at all.
+        # Non-conjunction, non-decay, non-attitude telemetry (e.g.
+        # DummyAdapter) has no object identity at all.
         subject = entry.telemetry.event_id
 
     console.print(badge, subject, "—", entry.decision.rationale)

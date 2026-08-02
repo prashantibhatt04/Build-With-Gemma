@@ -104,7 +104,8 @@ that: a metrics row, the full decision table,
 a pending-human-approval inbox with real Approve/Reject buttons, sidebar
 actions to fetch live CelesTrak conjunction data, screen a real CelesTrak
 debris group for decay/re-entry risk, run the synthetic CRITICAL
-scenario, or replay the historical collision without leaving the
+scenario, run the synthetic attitude/pointing-loss scenario (Stage 2f
+below), or replay the historical collision without leaving the
 browser, and - for any real conjunction event selected in the inspect
 panel - a real 3D orbit plot (Earth to scale, both objects' actual
 propagated paths, a closest-approach marker) plus a distance-vs-time
@@ -345,6 +346,50 @@ evaluation harness), not something to casually bolt on. Retrieval gets
 most of the practical benefit (real, checkable grounding in this
 project's own history) using only data and infrastructure that already
 exist.
+
+---
+
+## Stage 2f — A third hazard type: attitude / pointing loss (synthetic-only)
+
+```bash
+python3 -c "
+import uuid
+from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
+from src.pipeline import run_once
+adapter = SyntheticAttitudeAdapter(run_id=uuid.uuid4().hex[:8])
+entries = run_once(adapter=adapter, limit=4)
+for e in entries:
+    print(e.finding.severity.value, '->', e.decision.rationale)
+"
+```
+
+**What it proves:** a third hazard type, same idea-agnostic pipeline -
+but a genuinely different situation from conjunctions and decay risk.
+There is NO real, publicly-fetchable data source for spacecraft
+ATTITUDE at all: TLEs encode only orbital position and velocity, never
+orientation, and real attitude telemetry is normally proprietary to each
+spacecraft's own operator, not published anywhere analogous to
+CelesTrak. That's a structural absence, not "real data is rare on
+demand" the way a CRITICAL conjunction is - so `SyntheticAttitudeAdapter`
+(`src/ingestion/attitude_adapter.py`) is necessarily synthetic-only,
+clearly labeled via `source="synthetic-attitude-fixture"`, the same
+honesty standard `SyntheticCriticalAdapter` already set for conjunctions.
+This was discussed and agreed explicitly before writing any code, not
+discovered as a limitation afterward.
+
+Four synthetic readings deliberately span NOMINAL/WATCH/WARNING/CRITICAL
+in one run (unlike `SyntheticCriticalAdapter`'s all-CRITICAL design,
+which exists specifically to demo delta-v budget depletion - not
+applicable here, since attitude loss has no maneuver machinery either: a
+tumbling spacecraft isn't fixed by an avoidance burn or a reboost, and
+real attitude recovery - reaction-wheel desaturation, thruster-based
+detumbling - is a genuinely separate, out-of-scope problem). Look for:
+`classify_attitude_severity()` in `src/pipeline.py` classifying purely
+from `pointing_error_deg` (< 5° NOMINAL, 5-15° WATCH, 15-45° WARNING,
+>= 45° CRITICAL), with `angular_rate_deg_s` and `solar_panel_power_pct`
+carried as real supporting signal in the description/rationale - and the
+CRITICAL reading still getting a real deterministic action and real
+Gemma narration, with no `maneuver_plan`.
 
 ---
 
@@ -632,15 +677,17 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 180 tests, all green - orbital math (including the
+**What it proves:** 194 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
 hazard type's severity classification and screening (mocked network,
 plus real Vanguard 1/ISS TLE fixtures exercising Skyfield's own
-perigee/apogee/BSTAR fields), the live tracking view's real position
-computation and figure structure (mocked network, real fixed TLE
-fixtures), the mission-log search's embedding cache/invalidation,
+perigee/apogee/BSTAR fields), the attitude hazard type's severity
+classification and synthetic fixture (including the decay-vs-attitude
+subject-line disambiguation regression), the live tracking view's real
+position computation and figure structure (mocked network, real fixed
+TLE fixtures), the mission-log search's embedding cache/invalidation,
 cosine-similarity ranking, and context-grounded prompt construction
 (mocked Ollama calls), maneuver math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
@@ -649,8 +696,8 @@ JSON path and the free-text fallback path (mocked) - the historical
 replay (including an integration test proving the real 584m number
 classifies as CRITICAL through the actual pipeline), the orbit plot's
 real TLE fetch/propagation and Plotly figure structure (mocked network),
-terminal rendering for every maneuver state and both hazard types, the
-dashboard's data transforms and UI (via Streamlit's AppTest harness),
+terminal rendering for every maneuver state and all three hazard types,
+the dashboard's data transforms and UI (via Streamlit's AppTest harness),
 preflight checks, the full pipeline wiring, and the human-review/
 maneuver-approval log rewrites - covering everything demoed above
 without needing real network calls for CI/repeatability. (Check

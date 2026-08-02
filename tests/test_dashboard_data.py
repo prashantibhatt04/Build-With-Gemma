@@ -133,6 +133,32 @@ def test_entries_to_rows_shows_object_name_for_decay_hazard():
     assert rows[0]["perigee_altitude_km"] == 415.9
 
 
+def test_entries_to_rows_shows_object_name_for_attitude_hazard():
+    telemetry = TelemetryEvent(
+        event_id="attitude-99010", timestamp=datetime.now(timezone.utc),
+        source="synthetic-attitude-fixture",
+        raw_data={
+            "object_id": "99010", "object_name": "SYNTH-SAT-CRITICAL",
+            "pointing_error_deg": 70.0, "angular_rate_deg_s": 4.5,
+            "solar_panel_power_pct": 22.0,
+        },
+    )
+    finding = AnomalyFinding(
+        event_id="attitude-99010", severity=Severity.CRITICAL, description="d", confidence=0.8,
+    )
+    decision = Decision(action="abort", rationale="r", made_at=datetime.now(timezone.utc))
+    entry = DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=_provenance(),
+    )
+
+    rows = entries_to_rows([entry])
+
+    assert rows[0]["subject"] == "SYNTH-SAT-CRITICAL"
+    assert rows[0]["min_distance_km"] is None
+    assert rows[0]["perigee_altitude_km"] is None
+    assert rows[0]["pointing_error_deg"] == 70.0
+
+
 def test_compute_metrics_counts_every_status_bucket():
     plan = compute_avoidance_maneuver(object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0)
     clearance = verify_maneuver(2.0, plan)

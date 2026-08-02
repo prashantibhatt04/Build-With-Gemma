@@ -193,6 +193,24 @@ def classify_decay_severity(perigee_altitude_km: float) -> Severity:
     return Severity.NOMINAL
 
 
+def classify_attitude_severity(pointing_error_deg: float) -> Severity:
+    """Deterministic pointing-error-based severity for the attitude/
+    pointing-loss hazard (see src/ingestion/attitude_adapter.py - this
+    hazard type is synthetic-only, no real data source exists) - not
+    Gemma-derived, matching classify_conjunction_severity/
+    classify_decay_severity's design. A few degrees of pointing error is
+    within normal control-loop tolerance for most missions; tens of
+    degrees indicates the spacecraft has likely dropped into a safe/
+    tumble mode and lost fine attitude control."""
+    if pointing_error_deg >= 45:
+        return Severity.CRITICAL
+    if pointing_error_deg >= 15:
+        return Severity.WARNING
+    if pointing_error_deg >= 5:
+        return Severity.WATCH
+    return Severity.NOMINAL
+
+
 def _conjunction_description(client: GemmaClient, raw: dict) -> tuple[str, GemmaProvenance]:
     prompt = (
         "Summarize this satellite conjunction (close approach) for a mission "
@@ -247,12 +265,43 @@ def _decay_description(client: GemmaClient, raw: dict) -> tuple[str, GemmaProven
     )
 
 
+def _attitude_description(client: GemmaClient, raw: dict) -> tuple[str, GemmaProvenance]:
+    prompt = (
+        "Summarize this spacecraft's attitude/pointing status for a mission "
+        "controller in 1-2 plain-language sentences:\n"
+        f"Object: {raw['object_name']} (NORAD {raw['object_id']})\n"
+        f"Pointing error: {raw['pointing_error_deg']:.1f} deg from commanded attitude\n"
+        f"Angular rate: {raw['angular_rate_deg_s']:.2f} deg/s\n"
+        f"Solar panel power output: {raw['solar_panel_power_pct']:.0f}% of nominal"
+    )
+    fallback_text = (
+        f"{raw['object_name']} has a pointing error of "
+        f"{raw['pointing_error_deg']:.1f} deg (angular rate "
+        f"{raw['angular_rate_deg_s']:.2f} deg/s, power at "
+        f"{raw['solar_panel_power_pct']:.0f}% of nominal). "
+        "Gemma was unreachable, so this is a fallback summary."
+    )
+    return _call_gemma_with_provenance(
+        client,
+        prompt=prompt,
+        system="You are assisting a mission controller by summarizing "
+               "spacecraft attitude/pointing status in plain language. Be "
+               "concise and factual - this is a simplified assessment "
+               "based on pointing error, angular rate, and solar panel "
+               "power output, not a full attitude-determination-and-"
+               "control analysis. Respond in plain prose only - no LaTeX, "
+               "no markdown formatting, no special notation.",
+        fallback_text=fallback_text,
+    )
+
+
 def make_analyze_node(client: GemmaClient):
     def analyze_node(state: PipelineState) -> PipelineState:
         event = state["telemetry"]
         raw = event.raw_data
         min_distance_km = raw.get("min_distance_km")
         perigee_altitude_km = raw.get("perigee_altitude_km")
+        pointing_error_deg = raw.get("pointing_error_deg")
 
         if min_distance_km is not None:
             severity = classify_conjunction_severity(min_distance_km)
@@ -261,6 +310,10 @@ def make_analyze_node(client: GemmaClient):
         elif perigee_altitude_km is not None:
             severity = classify_decay_severity(perigee_altitude_km)
             description, description_provenance = _decay_description(client, raw)
+            confidence = compute_confidence(raw)
+        elif pointing_error_deg is not None:
+            severity = classify_attitude_severity(pointing_error_deg)
+            description, description_provenance = _attitude_description(client, raw)
             confidence = compute_confidence(raw)
         else:
             # Non-conjunction, non-decay telemetry (e.g. DummyAdapter's
@@ -321,6 +374,13 @@ def _decision_rationale(
             f"Perigee altitude: {raw['perigee_altitude_km']:.1f} km",
             f"Apogee altitude: {raw['apogee_altitude_km']:.1f} km",
             f"BSTAR drag term: {raw['bstar']:.3e}",
+        ]
+    elif raw.get("pointing_error_deg") is not None:
+        lines += [
+            f"Object: {raw['object_name']} (NORAD {raw['object_id']})",
+            f"Pointing error: {raw['pointing_error_deg']:.1f} deg",
+            f"Angular rate: {raw['angular_rate_deg_s']:.2f} deg/s",
+            f"Solar panel power: {raw['solar_panel_power_pct']:.0f}% of nominal",
         ]
 
     if finding.severity == Severity.CRITICAL and maneuver_plan is not None and budget_insufficient:
@@ -431,6 +491,15 @@ def _decision_rationale(
                 "planning ahead for a reboost or controlled-deorbit decision as the "
                 "perigee continues to drop."
             )
+        elif action == Action.HOLD and raw.get("pointing_error_deg") is not None:
+            instruction += (
+                " Then, as a natural continuation of that same recommendation (not "
+                "a contradiction of it), suggest in general terms only (no precise "
+                "control-law or torque figures) a plausible next step given the "
+                "pointing error - e.g. increased attitude telemetry monitoring, "
+                "or preparing a detumble/safe-mode-recovery procedure if the "
+                "pointing error or angular rate continues to increase."
+            )
         elif action == Action.HOLD:
             instruction += (
                 " Then, as a natural continuation of that same recommendation (not "
@@ -447,8 +516,9 @@ def _decision_rationale(
         client,
         prompt=prompt,
         system="You are assisting a mission controller by explaining a "
-               "spacecraft-safety action (collision avoidance or orbital "
-               "decay/re-entry risk) in plain language. Be concise, "
+               "spacecraft-safety action (collision avoidance, orbital "
+               "decay/re-entry risk, or attitude/pointing loss) in plain "
+               "language. Be concise, "
                "factual, decisive, and avoid precise maneuver figures beyond "
                "what you're explicitly given. The action has already been "
                "decided deterministically before you are called - for "
@@ -650,16 +720,18 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
         budget_insufficient = False
         awaiting_human_approval = False
         maneuver_vetoed = False
-        # CRITICAL can now come from either hazard type (conjunctions via
-        # classify_conjunction_severity, or orbital decay via
-        # classify_decay_severity - see analyze_node) - the maneuver
+        # CRITICAL can now come from any of three hazard types (conjunctions
+        # via classify_conjunction_severity, orbital decay via
+        # classify_decay_severity, or attitude/pointing loss via
+        # classify_attitude_severity - see analyze_node) - the maneuver
         # machinery below is conjunction-specific (an avoidance burn makes
-        # no sense for "your perigee is too low"), so it's gated on the
-        # raw_data actually being conjunction-shaped, not just on severity.
-        # A CRITICAL decay finding still gets a real deterministic action
-        # (Action.ABORT) and real Gemma narration - just no maneuver/
-        # budget/veto/approval machinery, which is conjunction-only scope
-        # for this phase (see PHASE_PROGRESS.md Phase 14).
+        # no sense for "your perigee is too low" or "you're tumbling"), so
+        # it's gated on the raw_data actually being conjunction-shaped, not
+        # just on severity. A CRITICAL decay or attitude finding still gets
+        # a real deterministic action (Action.ABORT) and real Gemma
+        # narration - just no maneuver/budget/veto/approval machinery,
+        # which is conjunction-only scope (see PHASE_PROGRESS.md Phases 14
+        # and 18).
         if finding.severity == Severity.CRITICAL and "object_a_id" in raw:
             maneuver_plan = compute_avoidance_maneuver(
                 object_a=raw["object_a_id"],

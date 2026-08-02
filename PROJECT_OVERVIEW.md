@@ -265,11 +265,12 @@ mock, not a second copy of the pipeline's decision logic:
 - **Ask about the mission log** — real retrieval-augmented search over
   this exact audit log (local Ollama embeddings, real cosine-similarity
   ranking, Gemma answering from only the retrieved entries) - see below.
-- Four sidebar actions generate real new activity without leaving the
+- Five sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
   screening described above), running the synthetic CRITICAL fixture,
-  replaying a real historical collision, and screening a real debris
-  group for decay/re-entry risk (see below for both).
+  replaying a real historical collision, screening a real debris group
+  for decay/re-entry risk, and running the synthetic attitude/pointing-
+  loss scenario (see below for all three hazard types).
 
 The dashboard's maneuver-state classification (which of the six states a
 decision is in) reuses the exact same `classify_decision_status` function
@@ -424,6 +425,41 @@ CRITICAL conjunctions (see Phase 5) — no synthetic fixture was built to
 paper over this. Try it: `python scripts/run_demo.py` (Step 5) or the
 dashboard's "Screen for orbital decay risk" button.
 
+## A third hazard: attitude / pointing loss (synthetic-only, and openly so)
+
+Conjunctions and decay risk both reuse real CelesTrak TLE data — but
+spacecraft **attitude** (which way it's pointing, how fast it's tumbling)
+is a genuinely different situation: TLEs encode only orbital position and
+velocity, never orientation, and real attitude telemetry is normally
+proprietary to each spacecraft's own operator, not published anywhere
+analogous to CelesTrak. That's a structural absence, not "real data is
+rare on demand" the way a CRITICAL conjunction or CRITICAL decay reading
+is — so `SyntheticAttitudeAdapter`
+(`src/ingestion/attitude_adapter.py`) is necessarily synthetic-only,
+clearly labeled via its `source` field (`synthetic-attitude-fixture`),
+the same honesty standard `SyntheticCriticalAdapter` already set for
+conjunctions. This was a deliberate design decision, discussed and agreed
+before writing any code, not a limitation discovered after the fact.
+
+Same deterministic-severity/Gemma-narrates pattern as every other hazard
+type: `classify_attitude_severity` (`src/pipeline.py`) classifies
+NOMINAL/WATCH/WARNING/CRITICAL from pointing-error degrees alone (a
+spacecraft losing attitude control also typically loses solar-panel
+pointing, so power output is carried as a real, correlated supporting
+signal — same "one primary threshold, supporting context" design as
+decay's BSTAR). Four synthetic readings deliberately span the full
+severity range in one demo run, unlike `SyntheticCriticalAdapter`'s
+all-CRITICAL design — that design exists specifically to demonstrate
+delta-v budget depletion across repeated CRITICAL events, which doesn't
+apply here since attitude loss has no maneuver machinery either (an
+avoidance burn or a reboost doesn't fix a tumbling spacecraft — real
+attitude recovery is reaction-wheel desaturation or thruster-based
+detumbling, a genuinely separate problem, explicitly out of scope). A
+CRITICAL attitude finding still gets a real deterministic action and
+real Gemma narration, exactly like CRITICAL decay risk. Try it:
+`python scripts/run_demo.py` or the dashboard's "Run synthetic
+attitude/pointing-loss scenario" button.
+
 ## What the demo shows, step by step
 
 `python scripts/run_demo.py` walks through all of this live, self-explained,
@@ -445,16 +481,21 @@ in order:
 5. **A second real hazard** — real objects screened individually for
    orbital decay/re-entry risk, proving the pipeline isn't
    conjunction-specific, with no maneuver machinery even at CRITICAL.
-6. **Local/cloud failover** — proves the system recovers automatically if
+6. **A third hazard type** — synthetic attitude/pointing-loss readings
+   spanning the full severity range, since (unlike the first two hazard
+   types) no real public data source for spacecraft attitude exists at
+   all - clearly labeled, still real deterministic classification and
+   real Gemma narration, still no maneuver machinery.
+7. **Local/cloud failover** — proves the system recovers automatically if
    its primary Gemma backend becomes unreachable (skipped on a
    local-only machine, so a local demo never makes an unplanned cloud call).
-7. **Human review** — marks a logged decision as reviewed, persisted to
+8. **Human review** — marks a logged decision as reviewed, persisted to
    the actual audit file, not just held in memory.
-8. **The audit trail itself** — reads back the real, raw, most recent log
+9. **The audit trail itself** — reads back the real, raw, most recent log
    entry, showing every field described above populated for real.
-9. **Automated test suite** — the full suite (network-free, mocked Gemma)
-   runs live, proving none of the above happened without a safety net.
-10. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
+10. **Automated test suite** — the full suite (network-free, mocked Gemma)
+    runs live, proving none of the above happened without a safety net.
+11. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
     maneuvers executed (autonomous vs. human-approved) vs. blocked vs.
     rejected.
 
@@ -478,9 +519,10 @@ here's what each one means, for reference:
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 | `object_a_group` / `object_b_group` | Which real CelesTrak group each object came from (e.g. `stations`, `cosmos-2251-debris`) — lets a cross-group "asset vs. debris" conjunction be told apart from a within-group one |
 | `last_scan_stats` | `CelesTrakAdapter` instance attribute (not logged per-event) — what a screening call actually covered: `total_objects`, `total_pairs_screened`, `pairs_refined`, `cross_group_pairs_refined` |
-| `source` (`TelemetryEvent`) | `"celestrak"` (real conjunction), `"celestrak-decay"` (real decay risk), `"synthetic-critical-fixture"` (synthetic), or `"historical-replay"` (real, documented, but historical) — never ambiguous about which |
+| `source` (`TelemetryEvent`) | `"celestrak"` (real conjunction), `"celestrak-decay"` (real decay risk), `"synthetic-critical-fixture"` (synthetic conjunction), `"synthetic-attitude-fixture"` (synthetic attitude/pointing loss), or `"historical-replay"` (real, documented, but historical) — never ambiguous about which |
 | `historical_event` / `historical_source` / `historical_actual_outcome` | Only present for historical replays — the citation and real-world outcome travel with the record itself, not just in documentation |
 | `perigee_altitude_km` / `apogee_altitude_km` / `bstar` | Only present for decay-hazard events — real orbital elements Skyfield's SGP4 model already parses, not a separate TLE parser |
+| `pointing_error_deg` / `angular_rate_deg_s` / `solar_panel_power_pct` | Only present for attitude-hazard events — synthetic (see "A third hazard" above); pointing error alone drives severity, the other two are supporting context |
 
 ## Repo hygiene: CI, license, and cleanup
 
@@ -526,6 +568,11 @@ submission is done. Three small, mechanical changes:
   using real orbital elements Skyfield already parses from data this
   project already fetches. `schemas.py` always said its shapes were
   "idea-agnostic"; this is that claim actually exercised, not just stated.
+- **A third hazard type, honestly synthetic where reality has no data to
+  give.** Attitude/pointing loss has no real public data source at all
+  (unlike decay, which is "rare on demand" but real when it happens) —
+  clearly labeled synthetic rather than quietly faked, the same standard
+  already set for the CRITICAL conjunction fixture.
 - **Not just narration - real retrieval too.** "Ask about the mission
   log" answers plain-English questions about the real audit trail by
   actually embedding and ranking real logged entries (local Ollama,
@@ -537,7 +584,7 @@ submission is done. Three small, mechanical changes:
   exact class of "the model phrased it slightly differently" ambiguity
   the original regex-based parser existed to paper over, with that
   original parser kept on as a documented fallback, not deleted.
-- **Verified, not just built.** 180 automated tests, plus every major path
+- **Verified, not just built.** 194 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -551,10 +598,10 @@ submission is done. Three small, mechanical changes:
 
 Every phase originally scoped for this submission, plus the visual orbit
 plot, a second real hazard type (orbital decay), a live tracking view of
-real crewed stations, retrieval-augmented mission-log search, and
-structured JSON output for the safety-critical veto verdict added
-afterward, is now built. Further extensions (a third hazard type, e.g.
-attitude/pointing loss) remain open-ended, not tracked as committed next
+real crewed stations, retrieval-augmented mission-log search, structured
+JSON output for the safety-critical veto verdict, and a third hazard type
+(attitude/pointing loss, synthetic-only by necessity) added afterward, is
+now built. Further extensions remain open-ended, not tracked as committed next
 steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage

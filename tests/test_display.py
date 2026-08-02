@@ -236,6 +236,42 @@ def test_render_entry_shows_object_name_and_perigee_for_decay_hazard():
     assert "decay-33821" not in output  # real subject shown, not the raw event_id
 
 
+def test_render_entry_shows_object_name_and_pointing_error_for_attitude_hazard():
+    """Attitude hazard (Phase 18) events also carry "object_name" like
+    decay events do - must be distinguished by a field decay's shape
+    doesn't have (pointing_error_deg), not misread as decay and crash
+    trying to read a nonexistent perigee_altitude_km."""
+    console = Console(record=True, width=120)
+    telemetry = TelemetryEvent(
+        event_id="attitude-99010", timestamp=datetime.now(timezone.utc),
+        source="synthetic-attitude-fixture",
+        raw_data={
+            "object_id": "99010", "object_name": "SYNTH-SAT-CRITICAL",
+            "pointing_error_deg": 70.0, "angular_rate_deg_s": 4.5,
+            "solar_panel_power_pct": 22.0,
+        },
+    )
+    finding = AnomalyFinding(
+        event_id=telemetry.event_id, severity=Severity.CRITICAL,
+        description="Test attitude finding.", confidence=0.8,
+    )
+    decision = Decision(
+        action="abort", rationale="Recommendation: abort.",
+        made_at=datetime.now(timezone.utc),
+    )
+    entry = DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=_provenance(),
+    )
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "SYNTH-SAT-CRITICAL" in output
+    assert "pointing error 70" in output
+    assert "attitude-99010" not in output  # real subject shown, not the raw event_id
+
+
 def _plan() -> ManeuverPlan:
     return compute_avoidance_maneuver(
         object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0,

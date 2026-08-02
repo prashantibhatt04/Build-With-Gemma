@@ -902,3 +902,82 @@ run (180/180 tests passing as part of its own Step 9, 3 real autonomous
 maneuvers executed, and the real audit log's `maneuver_approval.reason`
 field inspected directly afterward to confirm the parsed "reason" text -
 not a JSON blob - was what actually got written to disk).
+
+## Phase 18 — A third hazard type: attitude / pointing loss (synthetic-only)
+Status: done
+The other remaining item from the original roadmap discussion (RAG,
+structured JSON, and a third hazard type were all presented together;
+RAG and structured JSON were built first in Phases 16-17). Before writing
+any code, explicitly surfaced and got agreement on a real design
+constraint: unlike conjunctions (real CelesTrak TLEs) and decay risk
+(real orbital elements Skyfield already parses from those same TLEs),
+there is NO real, publicly-fetchable data source for spacecraft
+ATTITUDE - TLEs encode only orbital position/velocity, never
+orientation, and real attitude telemetry is normally proprietary to each
+spacecraft's own operator. This is a structural absence, not "real data
+is rare on demand" the way CRITICAL conjunctions/decay readings are -
+so this hazard type had to be synthetic-only from the start, not a
+compromise discovered partway through. Presented this explicitly and
+got explicit agreement on the synthetic-only approach before building
+anything, rather than assuming.
+Added:
+- `src/ingestion/attitude_adapter.py`: `SyntheticAttitudeAdapter`, 4
+  fixed synthetic readings (pointing_error_deg, angular_rate_deg_s,
+  solar_panel_power_pct) deliberately spanning all four severity bands
+  in one scan - a different design choice than
+  `SyntheticCriticalAdapter`'s all-CRITICAL fixture, since that fixture
+  exists specifically to demo delta-v budget depletion across repeated
+  CRITICAL events, which doesn't apply here (no maneuver machinery at
+  all for this hazard - see below).
+- `src/pipeline.py`: `classify_attitude_severity` (pointing-error bands:
+  <5° NOMINAL, 5-15° WATCH, 15-45° WARNING, >=45° CRITICAL - a spacecraft
+  losing attitude control also typically loses solar-panel pointing, so
+  power output travels as a real, correlated supporting signal in the
+  description/rationale, same "one primary threshold, supporting
+  context" pattern as decay's BSTAR), `_attitude_description` (new Gemma
+  prompt), `analyze_node` gained a third branch keyed on
+  `pointing_error_deg` presence (same shape-based branching pattern as
+  the decay branch). `decide_node`'s existing conjunction-only maneuver
+  guard (`"object_a_id" in raw`) already excludes attitude-shaped
+  raw_data with zero changes needed - confirmed directly, not assumed,
+  via a dedicated test and a live call inspecting
+  `decision.maneuver_plan is None`. `_decision_rationale` gained
+  attitude-shaped context lines and an attitude-aware HOLD instruction
+  (suggests increased telemetry monitoring or preparing a detumble/
+  safe-mode-recovery procedure - not a burn, since a burn doesn't fix a
+  tumbling spacecraft; real attitude recovery is reaction-wheel
+  desaturation or thruster-based detumbling, explicitly out of scope).
+- `display.py` / `dashboard_data.py`: both had a real, live latent bug
+  caught before it shipped, not after - the existing decay-hazard
+  subject-line branch in `display.py` matched on `"object_name" in raw`
+  alone, which attitude-shaped raw_data ALSO has (both hazards are
+  single-object), so it would have tried reading `raw['perigee_altitude_km']`
+  off attitude data and raised a real `KeyError`. Fixed by matching
+  decay's branch on its own distinguishing field (`perigee_altitude_km`)
+  instead of the shared `object_name`, with a new sibling branch for
+  `pointing_error_deg`. `dashboard_data.py`'s equivalent branch was
+  already safe (it only reads `object_name`, no hazard-specific fields)
+  and needed no fix - just a new `pointing_error_deg` output column,
+  mirroring `perigee_altitude_km`'s.
+- `scripts/run_demo.py` (new step) and `scripts/dashboard.py` (new
+  sidebar button, wrapped in try/except per the established PM-review
+  pattern) both wired to the real pipeline, nothing bypassed.
+20 new tests: `tests/test_attitude_adapter.py` (4 - severity-band
+coverage, synthetic labeling, limit handling, event_id uniqueness across
+scans), `tests/test_pipeline_smoke.py` (8 - `classify_attitude_severity`
+parametrized x6, `analyze_node` attitude branch, and a dedicated
+CRITICAL-attitude `decide_node` test proving no maneuver machinery runs
+and no `KeyError`), `tests/test_display.py` and
+`tests/test_dashboard_data.py` (1 each, including the specific
+decay-vs-attitude disambiguation the caught bug required). Suite:
+194/194.
+Live-verified three ways against real local Ollama: a standalone script
+running all 4 synthetic readings through the real pipeline (confirmed
+real, coherent Gemma narration for all four severities, including the
+WARNING band's detumble/safe-mode-recovery suggestion appearing
+correctly and the CRITICAL band's maneuver_plan/maneuver_approval both
+None), a full `scripts/run_demo.py --auto` run (194/194 tests passing as
+part of its own step, Step 6/11 shown live), and a real click of "Run
+synthetic attitude/pointing-loss scenario" in the browser dashboard
+(Total events 230→234, CRITICAL 128→129, confirmed via the real metrics
+display, not just the terminal).

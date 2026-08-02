@@ -17,6 +17,7 @@ from src.pipeline import (
     _extract_final_answer,
     _parse_veto_json,
     _parse_veto_verdict,
+    classify_attitude_severity,
     classify_decay_severity,
     make_analyze_node,
     make_decide_node,
@@ -354,6 +355,82 @@ def test_decide_node_critical_decay_gets_no_maneuver_machinery():
     maneuver_plan, and critically: no KeyError from trying to read
     object_a_id/min_distance_km off decay-shaped raw_data."""
     event = _make_decay_event(150.0)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(FakeGemmaClient())
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.action == Action.ABORT
+    assert decision.maneuver_plan is None
+    assert decision.verified_clearance is None
+    assert decision.maneuver_approval is None
+    assert decision.budget_insufficient is False
+    assert decision.awaiting_human_approval is False
+
+
+def _make_attitude_event(pointing_error_deg: float) -> TelemetryEvent:
+    """Builds a TelemetryEvent shaped like SyntheticAttitudeAdapter's
+    output - single-object (object_id/object_name), no perigee_altitude_km
+    (would be misread as the decay hazard) and no object_a_id (would be
+    misread as a conjunction)."""
+    raw_data = {
+        "object_id": "99010",
+        "object_name": "SYNTH-SAT-TEST",
+        "pointing_error_deg": pointing_error_deg,
+        "angular_rate_deg_s": 1.5,
+        "solar_panel_power_pct": 60.0,
+    }
+    return TelemetryEvent(
+        event_id="attitude-99010",
+        timestamp=datetime.now(timezone.utc),
+        source="synthetic-attitude-fixture",
+        raw_data=raw_data,
+    )
+
+
+@pytest.mark.parametrize(
+    "pointing_error_deg,expected_severity",
+    [
+        (4.9, Severity.NOMINAL),
+        (5.1, Severity.WATCH),
+        (14.9, Severity.WATCH),
+        (15.1, Severity.WARNING),
+        (44.9, Severity.WARNING),
+        (45.1, Severity.CRITICAL),
+    ],
+)
+def test_classify_attitude_severity_by_pointing_error(pointing_error_deg, expected_severity):
+    assert classify_attitude_severity(pointing_error_deg) == expected_severity
+
+
+def test_analyze_node_classifies_attitude_and_uses_attitude_description():
+    event = _make_attitude_event(70.0)  # CRITICAL range
+    analyze_node = make_analyze_node(FakeGemmaClient())
+
+    result_state = analyze_node({
+        "telemetry": event, "finding": None, "decision": None, "log_path": None,
+    })
+
+    finding = result_state["finding"]
+    assert finding.severity == Severity.CRITICAL
+    # No tle_epoch_age_hours in attitude's raw_data (it's not TLE-derived) -
+    # falls to compute_confidence's clearly-labeled placeholder, same as
+    # any other non-epoch-bearing shape, not a new special case.
+    assert finding.confidence == 0.8
+    assert finding.description == "Stubbed anomaly commentary: nothing to report."
+
+
+def test_decide_node_critical_attitude_gets_no_maneuver_machinery():
+    """Same reasoning as test_decide_node_critical_decay_gets_no_maneuver_machinery:
+    the maneuver/budget/veto/approval machinery is conjunction-specific
+    scope - a CRITICAL attitude finding should still get a real
+    deterministic action and real Gemma narration, just no maneuver_plan,
+    and critically: no KeyError from trying to read
+    object_a_id/min_distance_km off attitude-shaped raw_data."""
+    event = _make_attitude_event(70.0)
     finding = _make_finding(Severity.CRITICAL, event)
     decide_node = make_decide_node(FakeGemmaClient())
 

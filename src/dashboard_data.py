@@ -32,7 +32,11 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
         if "object_a_name" in raw and "object_b_name" in raw:
             subject = f"{raw['object_a_name']} vs {raw['object_b_name']}"
         elif "object_name" in raw:
-            # Decay hazard (Phase 14) - single object, not a pair.
+            # Decay (Phase 14) or attitude/pointing-loss (Phase 18) hazard -
+            # single object, not a pair. Both shapes carry "object_name",
+            # so this branch is safe for either without needing to
+            # distinguish them further - unlike display.py's per-hazard
+            # detail suffix, this is just the bare name.
             subject = raw["object_name"]
         else:
             subject = entry.telemetry.event_id
@@ -45,6 +49,7 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
             "subject": subject,
             "min_distance_km": raw.get("min_distance_km"),
             "perigee_altitude_km": raw.get("perigee_altitude_km"),
+            "pointing_error_deg": raw.get("pointing_error_deg"),
             "status": STATUS_LABELS.get(status, status),
             "rationale_source": entry.rationale_provenance.source,
             "human_reviewed": entry.human_reviewed,

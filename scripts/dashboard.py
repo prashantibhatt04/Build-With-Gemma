@@ -14,9 +14,13 @@ fetching live CelesTrak conjunctions (Phase 10's cross-group screening),
 running the synthetic CRITICAL fixture (real orbital data rarely produces
 a CRITICAL case on demand - see src/ingestion/synthetic_adapter.py),
 replaying a real documented historical conjunction (Phase 12 - see
-src/ingestion/historical_adapter.py), and screening real objects for
+src/ingestion/historical_adapter.py), screening real objects for
 orbital decay/re-entry risk (Phase 14 - a second real hazard type,
-see src/ingestion/decay_adapter.py). All four go through the real
+see src/ingestion/decay_adapter.py), and running a synthetic attitude/
+pointing-loss scenario (Phase 18 - a third hazard type, necessarily
+synthetic-only since no real public data source for spacecraft attitude
+exists, unlike TLE-derived position - see
+src/ingestion/attitude_adapter.py). All five go through the real
 pipeline (src/pipeline.run_once) - nothing here bypasses or duplicates it.
 
 The inspect panel can also render a real orbit plot (3D trajectories +
@@ -41,6 +45,7 @@ import streamlit as st
 
 from src.config import settings
 from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
+from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
@@ -267,6 +272,17 @@ def main() -> None:
                     run_once(adapter=adapter, logger=logger, limit=5)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't screen for decay risk: {exc}")
+            else:
+                st.rerun()
+
+        if st.button("Run synthetic attitude/pointing-loss scenario"):
+            try:
+                with st.spinner("Running synthetic attitude/pointing readings..."):
+                    run_id = uuid.uuid4().hex[:8]
+                    adapter = SyntheticAttitudeAdapter(run_id=run_id)
+                    run_once(adapter=adapter, logger=logger, limit=4)
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't run the attitude scenario: {exc}")
             else:
                 st.rerun()
 

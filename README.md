@@ -44,7 +44,11 @@ Conjunctions aren't the only hazard it screens for: a second real hazard
 type — orbital decay/re-entry risk — screens a real CelesTrak debris
 group for objects with dangerously low perigee altitude, using Skyfield's
 own SGP4 model (no synthetic data, same deterministic-severity /
-Gemma-narrates design as conjunctions).
+Gemma-narrates design as conjunctions). A third hazard type — attitude/
+pointing loss — is necessarily synthetic-only and clearly labeled as
+such: unlike orbital position, there's no real public data source for
+spacecraft attitude at all (TLEs never encode orientation), so this one
+is an honest exception to "real data wherever possible," not a quiet one.
 
 You can also ask the system about its own history: real
 retrieval-augmented search (local Ollama embeddings, real
@@ -76,6 +80,9 @@ phase and why.
   for low-perigee objects, ranked by decay risk
 - `src/ingestion/synthetic_adapter.py` — synthetic CRITICAL-range fixture
   (real data rarely produces one on demand), shared by the demo and dashboard
+- `src/ingestion/attitude_adapter.py` — synthetic attitude/pointing-loss
+  fixture (no real public data source exists for spacecraft attitude at
+  all, unlike orbital position), spanning all four severity bands
 - `src/ingestion/historical_adapter.py` — replays a real, documented past
   conjunction (the 2009 Iridium 33/Cosmos 2251 collision) through the
   unmodified pipeline
@@ -206,9 +213,9 @@ assets actually are right now, independent of any logged event. An "Ask
 about the mission log" box answers plain-English questions about the log
 itself with real retrieval-augmented search (see below). Sidebar buttons
 can generate real new activity (a live CelesTrak conjunction scan, a real
-decay/re-entry risk screen, the synthetic CRITICAL scenario, or a
-historical replay) without leaving the browser. Opens at
-`http://localhost:8501` by default.
+decay/re-entry risk screen, the synthetic CRITICAL scenario, the
+synthetic attitude/pointing-loss scenario, or a historical replay)
+without leaving the browser. Opens at `http://localhost:8501` by default.
 
 ## Ask about the mission log
 

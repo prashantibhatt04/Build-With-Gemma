@@ -247,10 +247,14 @@ mock, not a second copy of the pipeline's decision logic:
   thresholds drawn in, built by re-fetching each object's current TLE and
   re-propagating with the same physics `src/orbital.py` already uses -
   see below.
-- Three sidebar actions generate real new activity without leaving the
+- **Live tracking view** — real current positions (not a triage result)
+  for CelesTrak's `stations` group, on the same style of 3D globe - see
+  below.
+- Four sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
-  screening described above), running the synthetic CRITICAL fixture, and
-  replaying a real historical collision (see below).
+  screening described above), running the synthetic CRITICAL fixture,
+  replaying a real historical collision, and screening a real debris
+  group for decay/re-entry risk (see below for both).
 
 The dashboard's maneuver-state classification (which of the six states a
 decision is in) reuses the exact same `classify_decision_status` function
@@ -280,6 +284,25 @@ produced the originally-logged `min_distance_km`, the plotted closest
 approach can differ from what was logged at decision time - a live
 recomputation, not a replay of the original numbers, and the UI says
 that explicitly too.
+
+### Live tracking: what's actually up there right now
+
+The orbit plot answers "where were these two objects relative to each
+other" for a specific past triage result. "Show live positions" answers
+a different question - "where are the real, named assets right now" -
+independent of any logged event. It fetches CelesTrak's `stations` group
+(real crewed stations - ISS, Tiangong - plus their currently-docked
+visiting vehicles) and computes each object's real current position with
+a single Skyfield/SGP4 evaluation at "now" (`src/live_positions.py`),
+then plots it on the same style of scale-reference Earth globe the orbit
+plot uses.
+
+Deliberately scoped to the `stations` group specifically, not an attempt
+at rendering the full ~20,000-object public catalog: it's the exact same
+"asset actually worth protecting" set `CelesTrakAdapter` already treats
+as the real payload of this whole project (see its module docstring) - a
+small, named, recognizable set of real objects, not an unreadable point
+cloud of anonymous debris fragments.
 
 ## Historical replay: would this system have caught a real collision?
 
@@ -454,7 +477,7 @@ submission is done. Three small, mechanical changes:
   using real orbital elements Skyfield already parses from data this
   project already fetches. `schemas.py` always said its shapes were
   "idea-agnostic"; this is that claim actually exercised, not just stated.
-- **Verified, not just built.** 149 automated tests, plus every major path
+- **Verified, not just built.** 152 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -467,9 +490,10 @@ submission is done. Three small, mechanical changes:
   QA pass entry.
 
 Every phase originally scoped for this submission, plus the visual orbit
-plot and a second real hazard type (orbital decay) added afterward, is
-now built. Further extensions (a third hazard type, e.g. attitude/
-pointing loss) remain open-ended, not tracked as committed next steps.
+plot, a second real hazard type (orbital decay), and a live tracking view
+of real crewed stations added afterward, is now built. Further extensions
+(a third hazard type, e.g. attitude/pointing loss) remain open-ended, not
+tracked as committed next steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

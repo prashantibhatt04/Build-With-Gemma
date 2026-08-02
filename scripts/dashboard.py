@@ -40,6 +40,7 @@ from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
+from src.live_positions import build_live_globe_figure, fetch_live_positions
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
 from src.orbit_plot_data import build_3d_trajectory_figure, build_distance_chart, fetch_trajectory_data
@@ -120,6 +121,25 @@ def _render_orbit_plot(entry: DecisionLogEntry) -> None:
         st.plotly_chart(build_distance_chart(data), width="stretch")
 
 
+def _render_live_tracking() -> None:
+    st.subheader("Live tracking: real crewed stations, right now")
+    st.caption(
+        "Real current positions (not a triage result) for CelesTrak's "
+        "\"stations\" group - ISS, Tiangong, and their currently-docked "
+        "visiting vehicles - the same real, named assets the conjunction "
+        "screening above treats as the payload actually worth protecting."
+    )
+    if st.button("Show live positions"):
+        with st.spinner("Fetching real current TLEs and propagating..."):
+            try:
+                positions = fetch_live_positions()
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't fetch live positions: {exc}")
+                return
+        st.plotly_chart(build_live_globe_figure(positions), width="stretch")
+        st.caption(f"{len(positions)} real objects, positions computed for right now.")
+
+
 def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry], operator: str) -> None:
     st.subheader("Inspect / mark reviewed")
     if not entries:
@@ -151,6 +171,9 @@ def main() -> None:
     )
 
     logger = DecisionLogger(settings=settings)
+
+    _render_live_tracking()
+    st.divider()
 
     with st.sidebar:
         st.header("Controls")

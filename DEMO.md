@@ -94,7 +94,11 @@ is also viewable (and, for pending approvals, actionable) in a browser:
 streamlit run scripts/dashboard.py
 ```
 
-Opens at `http://localhost:8501`: a metrics row, the full decision table,
+Opens at `http://localhost:8501`: a "Show live positions" button renders
+a real *current-position* view (not a triage result) for CelesTrak's real
+crewed-stations group - ISS, Tiangong, and their currently-docked
+visiting vehicles - on a 3D globe, independent of any logged event (see
+Stage 2d below). Below that: a metrics row, the full decision table,
 a pending-human-approval inbox with real Approve/Reject buttons, sidebar
 actions to fetch live CelesTrak conjunction data, screen a real CelesTrak
 debris group for decay/re-entry risk, run the synthetic CRITICAL
@@ -268,6 +272,41 @@ from that 2009 collision have already re-entered by now. Same "real data
 rarely produces the most severe case on demand" situation already true
 for CRITICAL conjunctions in Stage 2 - documented honestly rather than
 tuning the thresholds to force a more dramatic result.
+
+---
+
+## Stage 2d — Live tracking: what's actually up there right now
+
+```bash
+python3 -c "
+from src.live_positions import fetch_live_positions
+positions = fetch_live_positions()  # real CelesTrak 'stations' group
+for p in sorted(positions, key=lambda p: p.altitude_km):
+    print(f'{p.name:30s} alt={p.altitude_km:7.1f} km  norad={p.norad_id}')
+print(f'{len(positions)} real objects')
+"
+```
+
+**What it proves:** not every real-data view in this project is a triage
+result. Stages 2 and 2c both answer "is this a risk?" for a real
+question with a real finding logged. This answers a different question -
+"where are the real, named assets right now?" - independent of any
+logged event: real current TLEs for CelesTrak's `stations` group (real
+crewed stations - ISS, Tiangong - plus their currently-docked visiting
+vehicles), each propagated with a single Skyfield/SGP4 evaluation at
+`ts.now()` (`src/live_positions.py`) - the same physics, evaluated at an
+instant instead of over a lookahead window. The dashboard's "Show live
+positions" button (see above) renders this same data as a real 3D globe
+with labeled markers instead of printing it.
+
+Deliberately scoped to the `stations` group rather than CelesTrak's full
+~20,000-object public catalog - the same "asset actually worth
+protecting" set Stage 2's cross-group screening already uses, not an
+attempt at an unbounded live map. And deliberately NOT wired into
+`scripts/run_demo.py`: a position snapshot produces no
+TelemetryEvent/AnomalyFinding/Decision, so forcing it through the guided
+demo's log-writing steps would mean inventing a finding for data that
+doesn't have one.
 
 ---
 
@@ -550,13 +589,15 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 149 tests, all green - orbital math (including the
+**What it proves:** 152 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
 hazard type's severity classification and screening (mocked network,
 plus real Vanguard 1/ISS TLE fixtures exercising Skyfield's own
-perigee/apogee/BSTAR fields), maneuver math (including the QA pass's
+perigee/apogee/BSTAR fields), the live tracking view's real position
+computation and figure structure (mocked network, real fixed TLE
+fixtures), maneuver math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
 (mocked), Gemma's autonomous maneuver veto-check (mocked), the historical
 replay (including an integration test proving the real 584m number

@@ -704,3 +704,54 @@ established and accepted for CRITICAL conjunctions (see Phase 5) - no
 synthetic decay fixture was built to paper over this, unlike conjunctions
 where one was, to keep this phase's scope controlled; CRITICAL/WARNING
 classification is still directly covered by dedicated unit tests either way.
+
+## Phase 15 — Live satellite tracking view
+Status: done
+A repo-hygiene phase (CI workflow, .gitignore cleanup, linking the
+existing LICENSE) landed between Phase 14 and this one but wasn't given
+its own numbered entry here at the user's request - it's not a pipeline
+feature, so PROJECT_OVERVIEW.md covers it instead of this file.
+This phase adds the first dashboard view that answers "where are the
+real assets right now" rather than "what did a triage run find." Every
+prior visualization (orbit plot, decision table) is event-driven - it
+only shows objects that were screened and produced a logged finding.
+Prompted by the user asking whether the UI showed live catalog status at
+all; agreed scope explicitly in conversation before building anything:
+NOT an attempt at rendering CelesTrak's full ~20,000-object public
+catalog (that's a different, unbounded feature), just the same
+`stations` group (real crewed stations - ISS, Tiangong - plus their
+currently-docked visiting vehicles) CelesTrakAdapter already treats as
+the actual payload worth protecting - a small, named, recognizable set
+that reads as real, not an anonymous debris point-cloud.
+Added:
+- src/live_positions.py: fetch_live_positions() reuses
+  src/ingestion/tle_source.py's fetch/cache/parse (no new fetch logic)
+  to get real current TLEs for the `stations` group, then computes each
+  object's real current position with ONE Skyfield/SGP4 evaluation at
+  ts.now() - the exact same Earth-centered (GCRS) frame and km units
+  orbital.py's compute_coarse_positions already uses, just evaluated at a
+  single instant instead of propagated forward. No new physics.
+  build_live_globe_figure() renders it on the same plain-sphere Earth
+  style orbit_plot_data.build_3d_trajectory_figure already established,
+  for visual consistency between the two 3D views.
+- scripts/dashboard.py: new "Live tracking: real crewed stations, right
+  now" section, button-gated (a real network call on every click, same
+  pattern as every other live-activity button) rather than fetched on
+  every page load.
+Deliberately NOT wired into scripts/run_demo.py or the audit log: unlike
+every other data source in this project, a live position snapshot
+produces no TelemetryEvent/AnomalyFinding/Decision - there's no triage
+question being answered ("is this a risk?"), just a real, honest picture
+of where things are. Forcing it through the analyze/decide/log pipeline
+to make it "consistent" with the rest of the demo would have meant
+inventing a finding/decision for data that doesn't have one - dashboard-
+only is the honest scope, not an oversight.
+3 new tests (tests/test_live_positions.py): real position computation
+from real, fixed TLE fixtures (same ISS ZARYA / Vanguard 1 fixtures used
+elsewhere in this suite) with the network call mocked, the disk-cache
+reuse behavior, and the figure's trace/marker structure. Suite: 152/152.
+Live-verified in a real browser: clicked "Show live positions" against
+the real running dashboard, confirmed a real network fetch (visible in
+the spinner + real elapsed time, not instant) returned 21 real objects
+from CelesTrak's live `stations` group, rendered as labeled markers
+(including real names like "KNACKSAT-2") on the 3D globe.

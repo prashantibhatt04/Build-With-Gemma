@@ -3,6 +3,7 @@ GemmaClient, no live network required.
 """
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -21,9 +22,10 @@ from src.pipeline import (
     classify_decay_severity,
     make_analyze_node,
     make_decide_node,
+    make_log_node,
     run_once,
 )
-from src.schemas import Action, AnomalyFinding, ManeuverPlan, Severity, TelemetryEvent, VerifiedClearance
+from src.schemas import Action, AnomalyFinding, Decision, GemmaProvenance, ManeuverPlan, Severity, TelemetryEvent, VerifiedClearance
 
 
 def test_extract_final_answer_leaves_clean_single_paragraph_unchanged():
@@ -772,3 +774,55 @@ def test_decide_node_gemma_veto_defaults_to_no_go_when_unparseable():
     assert decision.verified_clearance is None
     assert decision.maneuver_approval.approved is False
     assert "parseable" in decision.maneuver_approval.reason.lower()
+
+
+def _log_state(event, finding):
+    decision = Decision(action="abort", rationale="Test rationale.", made_at=datetime.now(timezone.utc))
+    return {
+        "telemetry": event, "finding": finding, "decision": decision,
+        "rationale_provenance": GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0),
+        "description_provenance": None, "veto_provenance": None, "log_path": None,
+    }
+
+
+@patch("src.pipeline.send_critical_alert")
+def test_log_node_triggers_alert_for_critical_finding(mock_alert, tmp_path):
+    settings = Settings(
+        gemma_backend="ollama", gemma_model="gemma4:e4b", ollama_host="http://localhost:11434",
+        gemma_api_key="", gemma_model_api="gemma-4-26b-a4b-it", log_dir=str(tmp_path),
+        delta_v_budget_m_s=5.0,
+    )
+    logger = DecisionLogger(settings=settings)
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    log_node = make_log_node(logger)
+
+    log_node(_log_state(event, finding))
+
+    mock_alert.assert_called_once()
+    logged_entry = mock_alert.call_args.args[0]
+    assert logged_entry.finding.severity == Severity.CRITICAL
+    assert mock_alert.call_args.args[1] is settings  # logger's own settings, not a new one
+
+
+def test_log_node_delegates_the_critical_check_to_send_critical_alert_itself(tmp_path):
+    """log_node calls send_critical_alert unconditionally for every entry,
+    not just CRITICAL ones - the severity gate lives entirely inside
+    send_critical_alert (see test_alerting.py), a single source of truth
+    for "does this fire" rather than duplicated logic in two places. Uses
+    a real (unconfigured) webhook_url, so this also proves a WATCH entry
+    through the real log_node -> send_critical_alert path makes no real
+    network call and doesn't raise."""
+    settings = Settings(
+        gemma_backend="ollama", gemma_model="gemma4:e4b", ollama_host="http://localhost:11434",
+        gemma_api_key="", gemma_model_api="gemma-4-26b-a4b-it", log_dir=str(tmp_path),
+        delta_v_budget_m_s=5.0, alert_webhook_url="",
+    )
+    logger = DecisionLogger(settings=settings)
+    event = _make_conjunction_event(50.0)
+    finding = _make_finding(Severity.WATCH, event)
+    log_node = make_log_node(logger)
+
+    result_state = log_node(_log_state(event, finding))
+
+    assert result_state["log_path"] is not None

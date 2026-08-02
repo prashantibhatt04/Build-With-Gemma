@@ -981,3 +981,58 @@ part of its own step, Step 6/11 shown live), and a real click of "Run
 synthetic attitude/pointing-loss scenario" in the browser dashboard
 (Total events 230→234, CRITICAL 128→129, confirmed via the real metrics
 display, not just the terminal).
+
+## Phase 19 — Real-time webhook alerting for CRITICAL events
+Status: done
+The last remaining item from the robustness/next-phase planning
+discussion that started Phases 16-18. Closes a real gap present since
+day one: a CRITICAL finding only ever showed up in the dashboard/audit
+log, passively - nothing pushed the fact that a CRITICAL event happened
+to anyone. This phase fires a real webhook the moment one is logged.
+Added:
+- `src/config.py`: `alert_webhook_url: str = ""` (defaulted, so no
+  existing `Settings(...)` call site needed updating - same pattern as
+  `gemma_embed_model` in Phase 16), `ALERT_WEBHOOK_URL` env var.
+- `src/alerting.py`: `build_alert_text(entry)` (a purpose-built subject
+  formatter covering all three hazard shapes - deliberately its own
+  minimal version rather than a fourth reuse of display.py's/
+  dashboard_data.py's/rag.py's own versions, since each already serves a
+  genuinely different output and none is a clean fit for a short alert
+  line) and `send_critical_alert(entry, settings)` - a real HTTP POST,
+  Slack Incoming Webhook compatible (`{"text": ...}`, so it also works
+  with Discord/Teams/any custom receiver), gated on
+  `finding.severity == Severity.CRITICAL` AND a configured URL. Reuses
+  the entry's already-generated real Gemma rationale as the alert body -
+  no new Gemma call, no extra latency or cost. Disabled by default
+  (empty URL = no-op); a failed POST is caught and reported, never
+  raised - an alerting outage must never block or crash the actual
+  triage pipeline, the same fail-safe philosophy as every Gemma call in
+  this project.
+- `src/pipeline.py`: `make_log_node` calls `send_critical_alert(entry,
+  logger.settings)` unconditionally for every logged entry, right after
+  `logger.log(entry)` - the severity/URL gate lives entirely inside
+  `send_critical_alert`, a single source of truth for "does this fire"
+  rather than duplicating that check in two places. `logger.settings`
+  (already stored on `DecisionLogger` since it takes a `Settings` at
+  construction) meant `make_log_node`'s signature didn't need to change
+  to thread a new parameter through.
+15 new tests: `tests/test_alerting.py` (9 - alert-text formatting across
+all three hazard shapes, severity gating, missing-URL gating, real
+payload shape, and a network-failure case proving it returns False
+rather than raising) and `tests/test_pipeline_smoke.py` (2 -
+`log_node` calling `send_critical_alert` with the logged entry and the
+logger's own settings for a CRITICAL finding, and a regression-style
+test proving a WATCH finding flows through the real
+`log_node -> send_critical_alert` path without a network call or a
+raise, confirming the delegation design rather than a duplicated gate).
+Suite: 203/203.
+Live-verified against a REAL local HTTP receiver, not just mocks: stood
+up a tiny `http.server`-based receiver on `localhost:8765` that appends
+every received POST body to a file, pointed a real `Settings.alert_webhook_url`
+at it, and ran two real scenarios through the real pipeline end to end -
+a real CRITICAL synthetic conjunction produced exactly one real webhook
+POST with the correct subject ("SYNTH-A-0 vs SYNTH-B-0 (3.00km)"), real
+event_id, action, and the real Gemma-generated rationale text word for
+word; a real WATCH-severity decay reading through the same configured
+receiver produced zero POSTs, confirming the severity gate holds for
+real traffic, not just the mocked unit tests.

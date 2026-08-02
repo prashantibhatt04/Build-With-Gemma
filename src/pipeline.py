@@ -17,6 +17,7 @@ from typing import Callable, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from .alerting import send_critical_alert
 from .gemma_client import GemmaClient, GemmaClientError
 from .ingestion.base_adapter import DataSourceAdapter, DummyAdapter
 from .logging_utils import DecisionLogger
@@ -832,6 +833,11 @@ def make_log_node(logger: DecisionLogger):
             veto_provenance=state.get("veto_provenance"),
         )
         log_path = logger.log(entry)
+        # Real-time alert, not just a passive log entry - see
+        # src/alerting.py. A no-op unless ALERT_WEBHOOK_URL is configured
+        # (logger.settings, the same Settings this pipeline run already
+        # uses); never raises, so a webhook outage can't block logging.
+        send_critical_alert(entry, logger.settings)
         return {**state, "log_path": log_path}
 
     return log_node

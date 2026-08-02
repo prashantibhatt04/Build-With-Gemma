@@ -34,6 +34,13 @@ class Settings:
     # (unlike gemma_model/gemma_model_api) so every existing Settings(...)
     # call site in this codebase keeps working unchanged.
     gemma_embed_model: str = "nomic-embed-text"
+    # Webhook URL for real-time CRITICAL-event alerts (see src/alerting.py).
+    # Slack Incoming Webhook compatible ({"text": ...} payload) - also
+    # works with Discord/Microsoft Teams via a compatible endpoint, or any
+    # custom HTTP receiver. Empty string (the default) disables alerting
+    # entirely - a no-op, not an error, so existing tests/demos are
+    # unaffected unless someone explicitly configures one.
+    alert_webhook_url: str = ""
 
 
 def load_settings() -> Settings:
@@ -46,6 +53,7 @@ def load_settings() -> Settings:
         log_dir=os.getenv("LOG_DIR", "./logs"),
         delta_v_budget_m_s=float(os.getenv("DELTA_V_BUDGET_M_S", "5.0")),
         gemma_embed_model=os.getenv("GEMMA_EMBED_MODEL", "nomic-embed-text"),
+        alert_webhook_url=os.getenv("ALERT_WEBHOOK_URL", ""),
     )
 
 

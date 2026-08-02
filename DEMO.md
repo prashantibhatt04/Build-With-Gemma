@@ -605,6 +605,63 @@ at the time.
 
 ---
 
+## Stage 5c — Real-time alerting for CRITICAL events
+
+```bash
+python3 -c "
+import http.server, json, threading, uuid
+
+received = []
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        received.append(json.loads(self.rfile.read(length)))
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+
+server = http.server.HTTPServer(('localhost', 8765), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+
+from src.config import settings as base_settings, Settings
+from src.gemma_client import GemmaClient
+from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
+from src.logging_utils import DecisionLogger
+from src.pipeline import run_once
+
+settings = Settings(
+    gemma_backend=base_settings.gemma_backend, gemma_model=base_settings.gemma_model,
+    ollama_host=base_settings.ollama_host, gemma_api_key=base_settings.gemma_api_key,
+    gemma_model_api=base_settings.gemma_model_api, log_dir=base_settings.log_dir,
+    delta_v_budget_m_s=base_settings.delta_v_budget_m_s,
+    alert_webhook_url='http://localhost:8765/webhook',
+)
+adapter = SyntheticCriticalAdapter(run_id=uuid.uuid4().hex[:8])
+run_once(adapter=adapter, client=GemmaClient(settings=settings), logger=DecisionLogger(settings=settings), limit=1)
+print(f'{len(received)} real webhook call(s) received:')
+print(received[0]['text'] if received else '(none)')
+"
+```
+
+**What it proves:** a CRITICAL finding doesn't just sit in the log
+waiting to be noticed - `src/alerting.py` fires a real HTTP POST the
+moment one is logged, from any of the three hazard types. This command
+stands up a genuine local HTTP receiver (not a mock) to prove the real
+webhook call actually happens, with the real content: subject, event_id,
+action, and the already-generated real Gemma rationale (no new Gemma
+call for the alert itself). Slack Incoming Webhook compatible
+(`{"text": ...}`), so it also works with Discord, Microsoft Teams, or
+any custom receiver - just set `ALERT_WEBHOOK_URL`.
+
+The firing condition is deterministic
+(`finding.severity == Severity.CRITICAL`) - not Gemma's call, same
+"Gemma narrates, never decides" principle as everywhere else. Disabled
+by default (`ALERT_WEBHOOK_URL` unset is a no-op, not an error), and a
+failed send is caught and reported, never raised - an alerting outage
+must never block or crash the actual triage pipeline. Try a non-CRITICAL
+event through the same receiver and confirm zero webhook calls arrive.
+
+---
+
 ## Stage 6 — Human review, for real
 
 Take the `event_id` from Stage 5's last (budget-insufficient) line and
@@ -677,7 +734,7 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 194 tests, all green - orbital math (including the
+**What it proves:** 203 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
@@ -689,7 +746,9 @@ subject-line disambiguation regression), the live tracking view's real
 position computation and figure structure (mocked network, real fixed
 TLE fixtures), the mission-log search's embedding cache/invalidation,
 cosine-similarity ranking, and context-grounded prompt construction
-(mocked Ollama calls), maneuver math (including the QA pass's
+(mocked Ollama calls), CRITICAL-event webhook alerting's text formatting
+across all three hazard shapes, severity/URL gating, and fail-safe
+network-error handling (mocked), maneuver math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
 (mocked), Gemma's autonomous maneuver veto-check - both the structured-
 JSON path and the free-text fallback path (mocked) - the historical

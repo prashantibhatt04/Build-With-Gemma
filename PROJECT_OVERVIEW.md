@@ -460,6 +460,31 @@ real Gemma narration, exactly like CRITICAL decay risk. Try it:
 `python scripts/run_demo.py` or the dashboard's "Run synthetic
 attitude/pointing-loss scenario" button.
 
+## Real-time alerting for CRITICAL events
+
+Every earlier phase answered "what happened" - this closes a real
+operational gap: right up until this phase, a CRITICAL finding just sat
+in the dashboard/audit log until someone happened to look. `src/alerting.py`
+fires a real HTTP POST to a configurable webhook (`ALERT_WEBHOOK_URL`)
+the moment a CRITICAL decision is logged, from any of the three hazard
+types - Slack Incoming Webhook compatible (`{"text": ...}`), so it also
+works with Discord, Microsoft Teams, or any custom receiver.
+
+The firing condition is deterministic (`finding.severity ==
+Severity.CRITICAL`) - not Gemma's call, the same "Gemma narrates, never
+decides" principle as everywhere else in this project. The alert body
+reuses the already-generated real Gemma rationale text rather than
+making a new Gemma call - no extra latency, no extra cost, and it's the
+same explanation a human would already see in the dashboard.
+
+Disabled by default (`ALERT_WEBHOOK_URL` unset is a no-op, not an
+error), and a failed send is caught and reported, never raised - an
+alerting outage must never block or crash the actual triage pipeline.
+Live-verified against a real local HTTP receiver (not just mocks): a
+real CRITICAL conjunction produced a real webhook POST with the correct
+subject/event_id/action/rationale, and a real WATCH-severity decay
+reading produced zero webhook calls.
+
 ## What the demo shows, step by step
 
 `python scripts/run_demo.py` walks through all of this live, self-explained,
@@ -584,7 +609,12 @@ submission is done. Three small, mechanical changes:
   exact class of "the model phrased it slightly differently" ambiguity
   the original regex-based parser existed to paper over, with that
   original parser kept on as a documented fallback, not deleted.
-- **Verified, not just built.** 194 automated tests, plus every major path
+- **CRITICAL doesn't wait to be noticed.** A real webhook fires the
+  moment a CRITICAL decision is logged, from any hazard type - reuses
+  the already-generated real Gemma rationale, fails safe (never blocks
+  or crashes the pipeline), and is disabled by default until a webhook
+  URL is actually configured.
+- **Verified, not just built.** 203 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -599,9 +629,10 @@ submission is done. Three small, mechanical changes:
 Every phase originally scoped for this submission, plus the visual orbit
 plot, a second real hazard type (orbital decay), a live tracking view of
 real crewed stations, retrieval-augmented mission-log search, structured
-JSON output for the safety-critical veto verdict, and a third hazard type
-(attitude/pointing loss, synthetic-only by necessity) added afterward, is
-now built. Further extensions remain open-ended, not tracked as committed next
+JSON output for the safety-critical veto verdict, a third hazard type
+(attitude/pointing loss, synthetic-only by necessity), and real-time
+webhook alerting for CRITICAL events added afterward, is now built.
+Further extensions remain open-ended, not tracked as committed next
 steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage

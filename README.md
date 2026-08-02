@@ -56,6 +56,12 @@ cosine-similarity ranking) lets Gemma answer plain-English questions
 about the audit log using only the real entries it retrieves — grounded
 and checkable, not guessed.
 
+A CRITICAL finding doesn't just sit in the log waiting to be noticed —
+a real webhook (Slack/Discord/Teams-compatible, or any custom receiver)
+fires the moment one is logged, reusing the already-generated real
+Gemma rationale as the alert body. Disabled by default; opt in with
+`ALERT_WEBHOOK_URL`.
+
 **See [`DEMO.md`](DEMO.md) for a full stage-by-stage walkthrough**, or
 just run the guided demo script directly (see below). **See
 [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md)** for what was built in each
@@ -102,6 +108,8 @@ phase and why.
 - `src/rag.py` — retrieval-augmented search over the real audit log:
   local Ollama embeddings, real cosine-similarity ranking, Gemma
   answering from only the retrieved entries
+- `src/alerting.py` — real webhook alert (Slack/Discord/Teams-compatible)
+  fired the moment a CRITICAL decision is logged; disabled by default
 - `src/preflight.py` — config/connectivity/filesystem health checks
 - `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
 - `scripts/dashboard.py` — **the live browser dashboard** (see below)

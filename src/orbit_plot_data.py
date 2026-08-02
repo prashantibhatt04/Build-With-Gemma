@@ -1,0 +1,154 @@
+"""Real orbital trajectory + distance-over-time data for visualizing a
+specific conjunction, and the Plotly figures built from it.
+
+Only meaningful for source="celestrak" events, which are backed by real
+NORAD-catalogued objects - synthetic/historical events have no real TLEs
+to propagate (see src/ingestion/historical_adapter.py's module docstring
+for why even historical TLEs aren't available at all: CelesTrak's public
+API only ever serves the CURRENT TLE for a catalog number, confirmed by
+querying it directly).
+
+Re-fetches the two objects' CURRENT TLEs by NORAD catalog number and
+re-propagates using the same orbital.py functions the real screening
+pipeline uses - no duplicated physics. Because this fetches CURRENT TLEs
+rather than the exact TLE epoch that produced an originally-logged
+min_distance_km, the propagation window starts from now, not from
+whenever the event was first logged - orbital elements update over time,
+so this is a live, real recomputation, not a byte-exact replay of a past
+log entry.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import NamedTuple
+
+import numpy as np
+import plotly.graph_objects as go
+import requests
+from skyfield.api import EarthSatellite, load
+
+from .orbital import build_coarse_times, compute_coarse_positions
+
+EARTH_RADIUS_KM = 6371.0
+
+# Same thresholds classify_conjunction_severity (src/pipeline.py) uses -
+# duplicated here (not imported) because pipeline.py's thresholds are
+# expressed as branches in a function, not as named constants to import.
+CRITICAL_THRESHOLD_KM = 5.0
+WARNING_THRESHOLD_KM = 25.0
+WATCH_THRESHOLD_KM = 100.0
+
+
+class TrajectoryData(NamedTuple):
+    times: list[datetime]
+    positions_a: np.ndarray  # shape (3, n) - km, geocentric
+    positions_b: np.ndarray  # shape (3, n)
+    distances_km: np.ndarray  # shape (n,)
+    object_a_name: str
+    object_b_name: str
+
+
+def _fetch_tle_by_catnr(catnr: str) -> tuple[str, str, str]:
+    """Fetches the CURRENT TLE for a single NORAD catalog number. Real
+    network call, same endpoint CelesTrakAdapter uses but queried by
+    CATNR instead of GROUP - no disk caching here, unlike the adapter's
+    per-group cache, since this is a one-off, user-triggered lookup for a
+    single object pair rather than a repeated bulk scan."""
+    url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={catnr}&FORMAT=tle"
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    if len(lines) < 3:
+        raise ValueError(f"No current TLE found for NORAD catalog number {catnr!r}")
+    return lines[0].strip(), lines[1].rstrip(), lines[2].rstrip()
+
+
+def fetch_trajectory_data(
+    object_a_id: str, object_a_name: str, object_b_id: str, object_b_name: str,
+    hours: int = 48,
+) -> TrajectoryData:
+    """Fetches both objects' CURRENT TLEs and computes their real
+    positions/separation over the next `hours` hours starting now, using
+    the same coarse-pass propagation (orbital.compute_coarse_positions)
+    the real screening pipeline uses."""
+    ts = load.timescale()
+    name_a, l1_a, l2_a = _fetch_tle_by_catnr(object_a_id)
+    name_b, l1_b, l2_b = _fetch_tle_by_catnr(object_b_id)
+    sat_a = EarthSatellite(l1_a, l2_a, name_a, ts)
+    sat_b = EarthSatellite(l1_b, l2_b, name_b, ts)
+
+    start_time = datetime.now(timezone.utc)
+    times = build_coarse_times(start_time, hours, coarse_step_minutes=5)
+    positions_a = compute_coarse_positions(sat_a, ts, times)
+    positions_b = compute_coarse_positions(sat_b, ts, times)
+    distances_km = np.sqrt(((positions_a - positions_b) ** 2).sum(axis=0))
+
+    return TrajectoryData(
+        times=times, positions_a=positions_a, positions_b=positions_b,
+        distances_km=distances_km,
+        # Prefer the caller's (logged) names - the live TLE's own name
+        # field is only a fallback, since it should always agree anyway.
+        object_a_name=object_a_name or name_a, object_b_name=object_b_name or name_b,
+    )
+
+
+def build_distance_chart(data: TrajectoryData) -> go.Figure:
+    """Separation between the two objects over time, with this project's
+    severity thresholds drawn as reference lines - makes it visually
+    obvious when (and whether) the real curve dips into risk territory,
+    not just what the single logged min_distance_km number was."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=data.times, y=data.distances_km, mode="lines", name="Separation (km)",
+    ))
+    for threshold, label, color in [
+        (CRITICAL_THRESHOLD_KM, "CRITICAL (<5km)", "red"),
+        (WARNING_THRESHOLD_KM, "WARNING (<25km)", "orange"),
+        (WATCH_THRESHOLD_KM, "WATCH (<100km)", "goldenrod"),
+    ]:
+        fig.add_hline(y=threshold, line_dash="dot", line_color=color, annotation_text=label)
+    fig.update_layout(
+        title=f"{data.object_a_name} vs {data.object_b_name} — separation over time",
+        xaxis_title="Time (UTC)", yaxis_title="Distance (km, log scale)",
+        yaxis_type="log",
+    )
+    return fig
+
+
+def build_3d_trajectory_figure(data: TrajectoryData) -> go.Figure:
+    """3D plot of both objects' real propagated positions (Earth-centered,
+    km) over the same window, with Earth drawn to scale for reference and
+    the closest-approach point marked. Not textured/photorealistic - a
+    plain sphere at the real Earth radius, purely as a scale reference for
+    the two real trajectories."""
+    min_idx = int(np.argmin(data.distances_km))
+
+    u, v = np.meshgrid(np.linspace(0, 2 * np.pi, 40), np.linspace(0, np.pi, 20))
+    earth_x = EARTH_RADIUS_KM * np.cos(u) * np.sin(v)
+    earth_y = EARTH_RADIUS_KM * np.sin(u) * np.sin(v)
+    earth_z = EARTH_RADIUS_KM * np.cos(v)
+
+    fig = go.Figure()
+    fig.add_trace(go.Surface(
+        x=earth_x, y=earth_y, z=earth_z, showscale=False,
+        colorscale=[[0, "rgb(30,60,110)"], [1, "rgb(30,60,110)"]],
+        opacity=0.85, name="Earth", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=data.positions_a[0], y=data.positions_a[1], z=data.positions_a[2],
+        mode="lines", name=data.object_a_name, line=dict(color="cyan", width=4),
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=data.positions_b[0], y=data.positions_b[1], z=data.positions_b[2],
+        mode="lines", name=data.object_b_name, line=dict(color="magenta", width=4),
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=[data.positions_a[0][min_idx]], y=[data.positions_a[1][min_idx]], z=[data.positions_a[2][min_idx]],
+        mode="markers", name="Closest approach", marker=dict(color="yellow", size=6, symbol="diamond"),
+    ))
+    fig.update_layout(
+        scene=dict(aspectmode="data", xaxis_title="km", yaxis_title="km", zaxis_title="km"),
+        title=f"{data.object_a_name} vs {data.object_b_name} — real propagated trajectories",
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    return fig

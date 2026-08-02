@@ -94,11 +94,17 @@ streamlit run scripts/dashboard.py
 ```
 
 Opens at `http://localhost:8501`: a metrics row, the full decision table,
-a pending-human-approval inbox with real Approve/Reject buttons, and
-sidebar actions to fetch live CelesTrak data or run the synthetic
-CRITICAL scenario without leaving the browser. Reads the exact same
-`logs/decisions-*.jsonl` audit log the CLI writes to - run either one
-first (or both, in either order) and the other will show the same data.
+a pending-human-approval inbox with real Approve/Reject buttons, sidebar
+actions to fetch live CelesTrak data, run the synthetic CRITICAL
+scenario, or replay the historical collision without leaving the
+browser, and - for any real CelesTrak-sourced event selected in the
+inspect panel - a real 3D orbit plot (Earth to scale, both objects'
+actual propagated paths, a closest-approach marker) plus a distance-vs-
+time chart with severity thresholds drawn in, built by re-fetching each
+object's current TLE and re-propagating with the same physics Stage 2
+above uses. Reads the exact same `logs/decisions-*.jsonl` audit log the
+CLI writes to - run either one first (or both, in either order) and the
+other will show the same data.
 
 **This is the file to update every time a new phase is added** - append
 a new `Step(...)` to the `STEPS` list in `scripts/run_demo.py` with its
@@ -491,17 +497,19 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 123 tests, all green - orbital math (including the
+**What it proves:** 128 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing,
 the CelesTrak adapter's cross-group screening (mocked network), maneuver
-math, budget tracking, Gemma client retry/fallback (mocked), Gemma's
-autonomous maneuver veto-check (mocked), the historical replay (including
-an integration test proving the real 584m number classifies as CRITICAL
-through the actual pipeline), terminal rendering for every maneuver
-state, the dashboard's data transforms and UI (via Streamlit's AppTest
-harness), preflight checks, the full pipeline wiring, and the
-human-review/maneuver-approval log rewrites - covering everything demoed
-above without needing real network calls for CI/repeatability. (Check
+math (including the QA pass's plausibility bound), budget tracking, Gemma
+client retry/fallback (mocked), Gemma's autonomous maneuver veto-check
+(mocked), the historical replay (including an integration test proving
+the real 584m number classifies as CRITICAL through the actual pipeline),
+the orbit plot's real TLE fetch/propagation and Plotly figure structure
+(mocked network), terminal rendering for every maneuver state, the
+dashboard's data transforms and UI (via Streamlit's AppTest harness),
+preflight checks, the full pipeline wiring, and the human-review/
+maneuver-approval log rewrites - covering everything demoed above
+without needing real network calls for CI/repeatability. (Check
 `PHASE_PROGRESS.md` for the current count if this drifts again as more
 gets added.)
 

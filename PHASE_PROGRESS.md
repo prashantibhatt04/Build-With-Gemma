@@ -566,3 +566,45 @@ re-launched and its Approve, Reject, and "Replay historical event"
 controls were each exercised for real against the live accumulated audit
 log, with the resulting writes confirmed directly against the raw log
 file afterward, not just trusted from the UI. Suite: 123/123.
+
+## Phase 13 — Visual orbit plot
+Status: done
+Added src/orbit_plot_data.py + a new "Orbit plot" section in the
+dashboard's inspect panel: for any celestrak-sourced event, re-fetches
+both objects' CURRENT TLEs by NORAD catalog number and re-propagates
+using the exact same coarse-pass functions (orbital.build_coarse_times,
+orbital.compute_coarse_positions) the real screening pipeline already
+uses - no duplicated physics. Renders two real Plotly charts: a 3D view
+(Earth to scale, both objects' actual propagated paths over the next 48h,
+a marker at the closest-approach point) and a distance-vs-time line chart
+with this project's own severity thresholds (5/25/100km) drawn as
+reference lines, so it's visually obvious when/whether the real curve
+crosses into risk territory.
+Deliberately scoped to celestrak-sourced events only, not synthetic or
+historical ones - synthetic fixtures have no real orbital elements at
+all, and (as Phase 12 already established) CelesTrak's public API only
+ever serves CURRENT TLEs, not archival ones, so a historical event has no
+real trajectory to re-propagate either. The panel says so explicitly
+for both cases rather than silently doing nothing or, worse, fabricating
+a plausible-looking plot from synthetic numbers.
+Honest caveat surfaced in the UI itself, not just here: since this
+re-fetches CURRENT TLEs rather than the exact TLE epoch that produced the
+originally-logged min_distance_km, the propagation window starts from
+now - orbital elements update over time, so the plotted closest approach
+can differ from what was logged when the decision was first made. This
+is a live recomputation, not a replay of the original numbers.
+6 new tests (TLE-by-catalog-number fetch/parse using the same real
+Vanguard 1/ISS fixtures test_orbital.py already uses, real propagation
+end-to-end, and figure-structure checks for both chart types) - dashboard
+wiring itself covered by the existing AppTest smoke tests (still pass
+unchanged with the new "Orbit plot" section added). Suite: 128/128.
+Live-verified in a real browser: selected a real celestrak-sourced event
+(COSMOS 2251 DEB vs COSMOS 2251 DEB), clicked "Generate orbit plot", and
+confirmed a real interactive 3D Plotly chart rendered - Earth, both
+objects' actual propagated paths, the closest-approach marker - and that
+rotating it (a real drag interaction, not scripted) revealed genuine
+elliptical orbital paths, not placeholder geometry. The distance-vs-time
+chart's structure was verified via an isolated live smoke test (real
+fetch + real propagation, outside the browser) plus its dedicated unit
+tests, rather than fighting this environment's flaky browser-scroll
+behavior on an already-proven code path.

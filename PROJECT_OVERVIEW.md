@@ -7,7 +7,8 @@
 validation), [Skyfield](https://rhodesmill.org/skyfield/)/SGP4 (real orbital
 mechanics), [Ollama](https://ollama.com) (local Gemma) and a hosted
 Gemini-style API (cloud Gemma), [Rich](https://rich.readthedocs.io/) (terminal UI),
-[Streamlit](https://streamlit.io) (live mission-ops dashboard).
+[Streamlit](https://streamlit.io) (live mission-ops dashboard),
+[Plotly](https://plotly.com/python/) (real 3D orbit visualization).
 
 ## The problem
 
@@ -240,6 +241,12 @@ mock, not a second copy of the pipeline's decision logic:
   the same way `scripts/approve_maneuver.py` does.
 - **Full decision table** and an **inspect/mark-reviewed panel** for any
   logged decision, wired to `DecisionLogger.mark_reviewed`.
+- **Orbit plot** — for any real celestrak-sourced event, a real 3D view
+  of both objects' actual propagated trajectories (Earth to scale, a
+  closest-approach marker) plus a distance-vs-time chart with severity
+  thresholds drawn in, built by re-fetching each object's current TLE and
+  re-propagating with the same physics `src/orbital.py` already uses -
+  see below.
 - Three sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
   screening described above), running the synthetic CRITICAL fixture, and
@@ -249,6 +256,30 @@ The dashboard's maneuver-state classification (which of the six states a
 decision is in) reuses the exact same `classify_decision_status` function
 the terminal renderer uses — the two views are structurally incapable of
 disagreeing with each other about what state a decision is in.
+
+### Orbit plot: seeing the real trajectories, not just the numbers
+
+Selecting any `source="celestrak"` event in the inspect panel and
+clicking "Generate orbit plot" re-fetches both objects' CURRENT TLEs by
+NORAD catalog number and re-propagates them with the exact same
+coarse-pass functions (`orbital.build_coarse_times`,
+`orbital.compute_coarse_positions`) the real screening pipeline already
+uses - no separate, duplicated physics. Renders a real interactive 3D
+Plotly view (Earth drawn to scale, both objects' actual propagated
+paths, a marker at the closest-approach point) and a distance-vs-time
+chart with this project's own severity thresholds drawn as reference
+lines.
+
+Deliberately unavailable for synthetic or historical events - synthetic
+fixtures have no real orbital elements, and (as established in Phase 12)
+CelesTrak's public API only ever serves *current* TLEs, so a historical
+event has no real archival trajectory to re-propagate either. The panel
+says so explicitly rather than fabricating a plausible-looking plot.
+Because it re-fetches *current* TLEs rather than the exact epoch that
+produced the originally-logged `min_distance_km`, the plotted closest
+approach can differ from what was logged at decision time - a live
+recomputation, not a replay of the original numbers, and the UI says
+that explicitly too.
 
 ## Historical replay: would this system have caught a real collision?
 
@@ -355,19 +386,22 @@ here's what each one means, for reference:
   The 2009 Iridium 33/Cosmos 2251 collision — a real, documented triage
   failure — classifies as CRITICAL through this system's ordinary,
   unmodified severity threshold, using the real 584m SOCRATES prediction.
-- **Verified, not just built.** 123 automated tests, plus every major path
+- **Verified, not just built.** 128 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
   browser against the real accumulated audit log, including clicking a
-  real Approve button and confirming the resulting write to disk. On top
-  of that, a full independent QA/gap-analysis/fresh-eyes review pass
-  found and fixed 7 real issues after everything above was already
-  "done" - see `PHASE_PROGRESS.md`'s QA pass entry.
+  real Approve button and confirming the resulting write to disk, and the
+  3D orbit plot was confirmed rendering genuine elliptical paths by
+  actually rotating it. On top of that, a full independent
+  QA/gap-analysis/fresh-eyes review pass found and fixed 7 real issues
+  after everything above was already "done" - see `PHASE_PROGRESS.md`'s
+  QA pass entry.
 
-Every phase originally scoped for this submission is now built. Further
-ideas (a visual orbit plot, multi-hazard triage beyond conjunctions) are
-open-ended, not tracked as committed next steps.
+Every phase originally scoped for this submission, plus the visual orbit
+plot added afterward, is now built. Further ideas (multi-hazard triage
+beyond conjunctions) remain open-ended, not tracked as committed next
+steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

@@ -16,6 +16,11 @@ a CRITICAL case on demand - see src/ingestion/synthetic_adapter.py), and
 replaying a real documented historical conjunction (Phase 12 - see
 src/ingestion/historical_adapter.py). All three go through the real
 pipeline (src/pipeline.run_once) - nothing here bypasses or duplicates it.
+
+The inspect panel can also render a real orbit plot (3D trajectories +
+distance-over-time) for any celestrak-sourced event, by re-fetching both
+objects' current TLEs and re-propagating with the same physics
+src/orbital.py already uses - see src/orbit_plot_data.py.
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
+from src.orbit_plot_data import build_3d_trajectory_figure, build_distance_chart, fetch_trajectory_data
 from src.pipeline import run_once
 from src.schemas import DecisionLogEntry
 
@@ -80,6 +86,37 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
                 st.rerun()
 
 
+def _render_orbit_plot(entry: DecisionLogEntry) -> None:
+    raw = entry.telemetry.raw_data
+    if entry.telemetry.source != "celestrak" or "object_a_id" not in raw:
+        st.caption(
+            f"Orbit plot unavailable - this event's source is {entry.telemetry.source!r}, "
+            "not a real NORAD-catalogued object pair. Only celestrak-sourced events have "
+            "real TLEs to propagate (synthetic fixtures aren't real orbits; historical "
+            "replays document a real past event but CelesTrak's public API only ever "
+            "serves CURRENT TLEs, not archival ones - see src/ingestion/historical_adapter.py)."
+        )
+        return
+
+    if st.button("Generate orbit plot", key=f"orbit_{entry.telemetry.event_id}"):
+        with st.spinner("Fetching current TLEs and propagating real trajectories..."):
+            try:
+                data = fetch_trajectory_data(
+                    raw["object_a_id"], raw.get("object_a_name", ""),
+                    raw["object_b_id"], raw.get("object_b_name", ""),
+                )
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't fetch/propagate a live orbit plot: {exc}")
+                return
+        st.caption(
+            "Recomputed live from each object's CURRENT TLE, starting now - orbital "
+            "elements update over time, so this may differ from the min_distance_km "
+            "logged when this decision was originally made."
+        )
+        st.plotly_chart(build_3d_trajectory_figure(data), width="stretch")
+        st.plotly_chart(build_distance_chart(data), width="stretch")
+
+
 def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry], operator: str) -> None:
     st.subheader("Inspect / mark reviewed")
     if not entries:
@@ -96,6 +133,10 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
     elif st.button("Mark reviewed", key=f"review_{selected_id}"):
         logger.mark_reviewed(selected_id, reviewed_by=operator)
         st.rerun()
+
+    st.divider()
+    st.subheader("Orbit plot")
+    _render_orbit_plot(selected)
 
 
 def main() -> None:

@@ -63,6 +63,9 @@ phase and why.
   the single source of truth for maneuver state, shared with the dashboard
 - `src/dashboard_data.py` — the dashboard's data transforms, kept
   Streamlit-free so they're directly unit-testable
+- `src/orbit_plot_data.py` — real 3D trajectory + distance-over-time
+  Plotly charts, re-propagated from live TLE data with the same physics
+  `src/orbital.py` already uses
 - `src/preflight.py` — config/connectivity/filesystem health checks
 - `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
 - `scripts/dashboard.py` — **the live browser dashboard** (see below)
@@ -155,10 +158,12 @@ streamlit run scripts/dashboard.py
 ```
 
 A live, browser-based mission-ops view over the exact same audit log the
-CLI writes to — metrics, a full decision table, and a pending-approval
-inbox with real Approve/Reject buttons. Sidebar buttons can generate real
-new activity (a live CelesTrak scan, or the synthetic CRITICAL scenario)
-without leaving the browser. Opens at `http://localhost:8501` by default.
+CLI writes to — metrics, a full decision table, a pending-approval inbox
+with real Approve/Reject buttons, and (for any real CelesTrak-sourced
+event) a real 3D orbit plot built by re-propagating live TLE data.
+Sidebar buttons can generate real new activity (a live CelesTrak scan,
+the synthetic CRITICAL scenario, or a historical replay) without leaving
+the browser. Opens at `http://localhost:8501` by default.
 
 ## Run the test suite
 

@@ -830,3 +830,75 @@ The first real query took ~32s (one-time embedding of the accumulated
 log against `nomic-embed-text`, cached afterward) plus real `gemma4:e4b`
 generation time; the embedding cache confirmed working via a second query
 reusing it without re-embedding unchanged entries.
+
+## Phase 17 — Structured JSON output for the safety-critical veto verdict
+Status: done
+The second item from the same robustness discussion that led to Phase
+16 (the first was RAG; this is the one explicitly framed as "make the
+Gemma/Ollama integration itself more robust," not a new feature).
+Targeted specifically: `_maneuver_veto_check`'s GO/NO-GO verdict, the one
+place in this whole project where Gemma's raw text output has ever
+directly gated a real safety-relevant outcome (whether an
+already-verified-safe maneuver actually executes). `_parse_veto_verdict`'s
+regex-based free-text scanning already had two real historical bugs
+fixed against it earlier in this project (a negation-misread regression,
+and the first-token-vs-last-match ordering issue) - both symptoms of the
+same underlying problem: parsing meaning out of free text is inherently
+fuzzy, no matter how carefully the regex is tuned.
+Verified feasibility directly before writing any code, same discipline
+as Phase 14's Skyfield check: curled Ollama's `/api/generate` with a real
+JSON Schema in the `format` field against this project's actual model
+(gemma4:e4b) and confirmed it returns real schema-constrained JSON, not
+just a formatting suggestion the model might ignore.
+Added:
+- `GemmaClient.generate()` gained an optional `format: Optional[dict]`
+  param (a real JSON Schema, passed straight through to Ollama's own
+  `format` field - `_generate_ollama`). Deliberately NOT implemented for
+  `_generate_hosted_api` - the hosted Gemini-style API's structured-output
+  support was out of scope for this phase, and more importantly,
+  `_maneuver_veto_check` is architecturally only ever invoked when the
+  CONFIGURED backend is "ollama" (see `make_decide_node` - the cloud path
+  uses human approval instead, never the veto check). The hosted path
+  accepts-and-ignores `format` rather than raising, so `generate()`'s
+  existing cross-backend fallback (Ollama briefly down mid-call) degrades
+  to unstructured text instead of failing outright.
+- `src/pipeline.py`: `_VETO_JSON_SCHEMA` (`{"verdict": "GO"|"NO-GO",
+  "reason": string}`, both required), `_parse_veto_json` (strict: rejects
+  anything that isn't a JSON object, has a verdict outside the enum, or
+  has a missing/empty reason - returns None rather than guessing),
+  `_MANEUVER_VETO_SYSTEM` reworded to describe the JSON shape instead of
+  "answer must begin with a token." `_maneuver_veto_check` now prefers
+  `_parse_veto_json`'s structured result and only falls back to the
+  original `_parse_veto_verdict` free-text scan when structured parsing
+  fails - the free-text path was NOT deleted, since it's still the only
+  thing that can handle a cross-backend-fallback response. `format` was
+  threaded through `_call_gemma_with_provenance` as an optional kwarg
+  that's only actually passed to `client.generate()` when non-None -
+  every other call site (description/rationale/RAG-answer generation, and
+  every duck-typed fake GemmaClient already in the test suite) keeps
+  working completely unchanged, since they never opt in.
+16 new tests: `_parse_veto_json` (10 cases - valid GO/NO-GO, real
+pretty-printed whitespace from an actual observed gemma4:e4b response,
+non-JSON text, schema violations, missing/empty/whitespace-only reason,
+non-object JSON), a schema/parser drift sanity check, two
+`_maneuver_veto_check` integration tests via structured JSON responses
+(confirming only the parsed "reason" - not the raw JSON blob - lands in
+`ManeuverApproval.reason`), and `GemmaClient` coverage for `format`
+reaching the Ollama payload, being omitted when not requested, and being
+silently accepted-not-raised by the hosted API path. Suite: 180/180.
+3 existing duck-typed fake `GemmaClient`s across the test suite
+(`test_pipeline_smoke.py` x2, `test_historical_adapter.py`) needed a
+`format=None` parameter added to their `generate()` signatures purely to
+keep accepting calls that now sometimes pass it - a mechanical,
+behavior-preserving update, not a logic change.
+Live-verified three ways against real local Ollama: a standalone script
+calling `_maneuver_veto_check` through the real pipeline (confirmed
+`veto_provenance.source == "gemma"` and a clean parsed reason string with
+no raw JSON or "GO -" prefix leaking into `ManeuverApproval.reason`), a
+direct `client.generate(..., format=_VETO_JSON_SCHEMA)` call printing the
+real raw Ollama response side-by-side with `_parse_veto_json`'s output to
+confirm the shapes actually match, and a full `scripts/run_demo.py --auto`
+run (180/180 tests passing as part of its own Step 9, 3 real autonomous
+maneuvers executed, and the real audit log's `maneuver_approval.reason`
+field inspected directly afterward to confirm the parsed "reason" text -
+not a JSON blob - was what actually got written to disk).

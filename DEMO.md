@@ -449,7 +449,12 @@ for e in entries:
   run. On the local backend, a deterministic physics check verifies the
   maneuver safe first, then Gemma itself gets those same numbers and
   issues a real GO/NO-GO verdict (Phase 9 - see `_maneuver_veto_check` in
-  `src/pipeline.py`) standing in for the unavailable human. When it
+  `src/pipeline.py`) standing in for the unavailable human - requested as
+  real JSON-schema-constrained output from Ollama (Phase 17), not parsed
+  out of free text, with the original free-text parser
+  (`_parse_veto_verdict`) kept on as a fallback for the one case
+  structured output can't cover (a cross-backend fallback response from
+  the hosted API mid-call). When it
   affirms (the expected outcome for a maneuver the physics already
   verified safe), `decision.maneuver_plan` and `decision.verified_clearance`
   (new distance, `cleared: true`) are populated, `maneuver_approval.mode`
@@ -627,7 +632,7 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 164 tests, all green - orbital math (including the
+**What it proves:** 180 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
@@ -639,7 +644,8 @@ fixtures), the mission-log search's embedding cache/invalidation,
 cosine-similarity ranking, and context-grounded prompt construction
 (mocked Ollama calls), maneuver math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
-(mocked), Gemma's autonomous maneuver veto-check (mocked), the historical
+(mocked), Gemma's autonomous maneuver veto-check - both the structured-
+JSON path and the free-text fallback path (mocked) - the historical
 replay (including an integration test proving the real 584m number
 classifies as CRITICAL through the actual pipeline), the orbit plot's
 real TLE fetch/propagation and Plotly figure structure (mocked network),

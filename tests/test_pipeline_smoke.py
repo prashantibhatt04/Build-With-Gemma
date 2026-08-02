@@ -13,7 +13,9 @@ from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
 from src.pipeline import (
     _MANEUVER_VETO_SYSTEM,
+    _VETO_JSON_SCHEMA,
     _extract_final_answer,
+    _parse_veto_json,
     _parse_veto_verdict,
     classify_decay_severity,
     make_analyze_node,
@@ -116,6 +118,36 @@ def test_parse_veto_verdict(text, expected):
     assert _parse_veto_verdict(text) is expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ('{"verdict": "GO", "reason": "Numbers check out."}', (True, "Numbers check out.")),
+        ('{"verdict": "NO-GO", "reason": "Inconsistent numbers."}', (False, "Inconsistent numbers.")),
+        # Real gemma4:e4b output observed directly via Ollama's structured
+        # output (confirmed by curl before relying on this) - pretty-printed
+        # with real whitespace/newlines, not a compact one-liner.
+        ('{\n"verdict": "GO"\n  ,\n"reason": "Looks safe."\n}', (True, "Looks safe.")),
+        ("not json at all", None),  # cross-backend fallback to hosted API, or a malformed response
+        ('{"verdict": "MAYBE", "reason": "Unclear."}', None),  # schema violation the model still emitted
+        ('{"verdict": "GO"}', None),  # missing required "reason"
+        ('{"verdict": "GO", "reason": ""}', None),  # empty reason isn't real content
+        ('{"verdict": "GO", "reason": "  "}', None),  # whitespace-only reason isn't real content
+        ("[1, 2, 3]", None),  # valid JSON, but not an object
+        ("", None),
+    ],
+)
+def test_parse_veto_json(text, expected):
+    assert _parse_veto_json(text) == expected
+
+
+def test_veto_json_schema_matches_expected_shape():
+    # Sanity check that the schema constant used to REQUEST structured
+    # output actually describes what _parse_veto_json expects to receive -
+    # these two must never drift apart independently.
+    assert _VETO_JSON_SCHEMA["required"] == ["verdict", "reason"]
+    assert _VETO_JSON_SCHEMA["properties"]["verdict"]["enum"] == ["GO", "NO-GO"]
+
+
 class FakeGemmaClient:
     """Duck-types GemmaClient (generate() + settings.gemma_model/
     gemma_backend) without making any network calls. gemma_backend defaults
@@ -135,7 +167,7 @@ class FakeGemmaClient:
         self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend=gemma_backend)
         self.veto_response = veto_response
 
-    def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
+    def generate(self, prompt: str, system=None, timeout: int = 60, format=None) -> str:
         if system == _MANEUVER_VETO_SYSTEM:
             return self.veto_response
         return "Stubbed anomaly commentary: nothing to report."
@@ -149,7 +181,7 @@ class FailingGemmaClient:
             gemma_model="fake-model", gemma_backend=gemma_backend, gemma_model_api=gemma_model_api,
         )
 
-    def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
+    def generate(self, prompt: str, system=None, timeout: int = 60, format=None) -> str:
         raise GemmaClientError("simulated failure")
 
 
@@ -603,6 +635,47 @@ def test_decide_node_gemma_veto_blocks_autonomous_maneuver():
     veto_provenance = result_state["veto_provenance"]
     assert veto_provenance is not None
     assert veto_provenance.source == "gemma"
+
+
+def test_decide_node_gemma_veto_blocks_autonomous_maneuver_from_structured_json():
+    """Same as test_decide_node_gemma_veto_blocks_autonomous_maneuver, but
+    with the real structured JSON response Ollama's schema-constrained
+    generation produces (see _VETO_JSON_SCHEMA), not free text - proves
+    _maneuver_veto_check prefers the structured path when it's available,
+    and that only the "reason" field (not the raw JSON blob) ends up in
+    maneuver_approval.reason."""
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(
+        FakeGemmaClient(veto_response='{"verdict": "NO-GO", "reason": "Inconsistent numbers."}')
+    )
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.verified_clearance is None  # NOT executed - Gemma vetoed it
+    assert decision.maneuver_approval.approved is False
+    assert "Inconsistent numbers." in decision.maneuver_approval.reason
+    assert '{"verdict"' not in decision.maneuver_approval.reason  # the parsed reason, not the raw JSON
+
+
+def test_decide_node_gemma_veto_affirms_autonomous_maneuver_from_structured_json():
+    event = _make_conjunction_event(2.5)
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(
+        FakeGemmaClient(veto_response='{"verdict": "GO", "reason": "Clearance margin is safe."}')
+    )
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.verified_clearance is not None  # executed
+    assert decision.maneuver_approval.approved is True
+    assert "Clearance margin is safe." in decision.maneuver_approval.reason
 
 
 def test_decide_node_gemma_veto_defaults_to_no_go_when_unparseable():

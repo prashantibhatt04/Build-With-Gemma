@@ -20,12 +20,15 @@ never by the AI. Whether it executes autonomously or waits for a human to
 approve it depends on which Gemma backend is configured: local (Ollama)
 is treated as "ground control unreachable" — a deterministic physics
 check verifies the maneuver safe, then Gemma itself issues a real
-GO/NO-GO veto over it, standing in for the unavailable human (bounded so
-it can only veto an already-verified-safe maneuver, never approve one the
-physics hasn't cleared); the hosted API is treated as "ground control
-reachable" (a real human must explicitly approve or reject before it
-executes). A limited delta-v budget prevents an unlimited number of
-maneuvers from executing silently.
+GO/NO-GO veto over it — requested as real JSON-schema-constrained output
+from Ollama, not parsed out of free text, with the original free-text
+parser kept on as a fallback for the one case structured output can't
+cover — standing in for the unavailable human (bounded so it can only
+veto an already-verified-safe maneuver, never approve one the physics
+hasn't cleared); the hosted API is treated as "ground control reachable"
+(a real human must explicitly approve or reject before it executes). A
+limited delta-v budget prevents an unlimited number of maneuvers from
+executing silently.
 Every decision — including whether its explanation came from Gemma or a
 deterministic fallback, and who (if anyone) approved a maneuver — is
 written to an append-only JSON-lines audit log.

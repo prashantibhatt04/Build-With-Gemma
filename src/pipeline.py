@@ -9,6 +9,7 @@ placeholder behavior in both nodes.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -99,18 +100,30 @@ def _extract_final_answer(text: str) -> str:
 def _call_gemma_with_provenance(
     client: GemmaClient, prompt: str, system: str, fallback_text: str,
     postprocess: Callable[[str], str] = _extract_final_answer,
+    format: Optional[dict] = None,
 ) -> tuple[str, GemmaProvenance]:
     """Calls Gemma and always returns (text, provenance), never raises -
     falls back to fallback_text on GemmaClientError. postprocess is applied
     to a successful raw response before returning it - defaults to
     _extract_final_answer (strip chain-of-thought down to the real answer).
-    The maneuver veto-check caller passes a no-op instead: it needs to scan
-    the FULL response for a GO/NO-GO token rather than just the last
-    substantive line, since a short verdict token given first (as
-    instructed) would otherwise get discarded by that last-line heuristic."""
+    The maneuver veto-check caller passes a no-op instead: it needs the
+    FULL response (JSON, or free text if format wasn't honored - see
+    _maneuver_veto_check) rather than just the last substantive line.
+    format, when given, is passed through to GemmaClient.generate() for
+    real JSON-schema-constrained decoding (Ollama-only - see
+    GemmaClient.generate's docstring for the cross-backend-fallback
+    caveat)."""
     start = time.monotonic()
     try:
-        text = postprocess(client.generate(prompt=prompt, system=system))
+        # format is only passed through when actually requested, not as an
+        # always-present format=None kwarg - keeps every OTHER call site
+        # (description/rationale/RAG-answer generation, and every
+        # duck-typed fake GemmaClient in the test suite that predates
+        # format support) working unchanged, since they never opt in.
+        generate_kwargs = {"prompt": prompt, "system": system}
+        if format is not None:
+            generate_kwargs["format"] = format
+        text = postprocess(client.generate(**generate_kwargs))
         source = "gemma"
         model_used = _describe_model_used(client)
     except GemmaClientError:
@@ -457,13 +470,30 @@ _MANEUVER_VETO_SYSTEM = (
     "that a deterministic physics check has already computed and "
     "independently verified as safe, on a spacecraft where ground control "
     "is currently unreachable. You are the only check left before this "
-    "maneuver executes with no human in the loop. Your answer must begin "
-    "with a single clear verdict token, GO or NO-GO, before anything else. "
-    "Only answer NO-GO if you see a concrete problem with the numbers you "
-    "are given - do not second-guess a maneuver the numbers already show "
-    "is safe just to be cautious. Respond in plain prose only - no LaTeX, "
-    "no markdown formatting, no special notation."
+    "maneuver executes with no human in the loop. Respond with a JSON "
+    "object containing \"verdict\" (exactly the string \"GO\" or \"NO-GO\") "
+    "and \"reason\" (a short plain-English explanation, no LaTeX or "
+    "markdown). Only answer NO-GO if you see a concrete problem with the "
+    "numbers you are given - do not second-guess a maneuver the numbers "
+    "already show is safe just to be cautious."
 )
+
+# Real JSON-schema-constrained decoding for the veto verdict (Ollama's
+# own /api/generate `format` param - see GemmaClient._generate_ollama),
+# not a post-hoc parsing hint: confirmed directly against this project's
+# own model (gemma4:e4b) that Ollama's structured-output support forces
+# the response to actually match this shape, eliminating the free-text
+# parsing ambiguity _parse_veto_verdict below exists to handle. Kept as
+# a schema constant (not a Pydantic model) since it's passed straight
+# through to Ollama's HTTP API, which expects raw JSON Schema.
+_VETO_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["GO", "NO-GO"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+}
 
 
 def _maneuver_veto_prompt(
@@ -481,7 +511,7 @@ def _maneuver_veto_prompt(
         f"Independently verified post-maneuver separation: "
         f"{verified_clearance.new_min_distance_km:.2f} km "
         f"(clears the 5km CRITICAL threshold: {verified_clearance.cleared})\n\n"
-        "GO or NO-GO?"
+        "What is your verdict?"
     )
 
 
@@ -519,6 +549,31 @@ def _parse_veto_verdict(text: str) -> Optional[bool]:
     return not matches[-1].upper().startswith("NO")
 
 
+def _parse_veto_json(text: str) -> Optional[tuple[bool, str]]:
+    """Parses the {"verdict": "GO"|"NO-GO", "reason": str} response
+    Ollama's schema-constrained generation produces for _VETO_JSON_SCHEMA
+    - the preferred path: deterministic by construction, no free-text
+    scanning needed. Returns None (not "NO-GO") for anything that isn't
+    valid, schema-matching JSON - e.g. a cross-backend fallback response
+    from the hosted API, which doesn't honor `format` (see
+    GemmaClient._generate_hosted_api) - so the caller can fall back to
+    _parse_veto_verdict's free-text scan instead of misreading a parse
+    failure as an actual veto."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    verdict = data.get("verdict")
+    if verdict not in ("GO", "NO-GO"):
+        return None
+    reason = data.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return verdict == "GO", reason
+
+
 def _maneuver_veto_check(
     client: GemmaClient, raw: dict, maneuver_plan: ManeuverPlan, verified_clearance: VerifiedClearance,
 ) -> tuple[bool, str, GemmaProvenance]:
@@ -539,22 +594,38 @@ def _maneuver_veto_check(
         default is NO-GO, not a free pass - approved=False.
       - Gemma explicitly says NO-GO: approved=False.
       - Gemma explicitly says GO: approved=True.
+
+    Requests real JSON-schema-constrained output (_VETO_JSON_SCHEMA) and
+    prefers parsing that structured response (_parse_veto_json) over the
+    older free-text scan (_parse_veto_verdict) - the schema constraint is
+    Ollama-only, so the free-text scan stays as a fallback for the one
+    case structured output can't cover: generate()'s own cross-backend
+    fallback landing on the hosted API mid-call, which doesn't honor
+    `format` and returns plain text instead.
     """
     prompt = _maneuver_veto_prompt(raw, maneuver_plan, verified_clearance)
     fallback_text = "Gemma unreachable; defaulting to physics-only autonomous approval (fail-safe)."
     text, provenance = _call_gemma_with_provenance(
         client, prompt=prompt, system=_MANEUVER_VETO_SYSTEM, fallback_text=fallback_text,
         postprocess=lambda raw_text: raw_text.strip(),
+        format=_VETO_JSON_SCHEMA,
     )
     if provenance.source == "fallback":
         return True, fallback_text, provenance
 
-    verdict = _parse_veto_verdict(text)
+    structured = _parse_veto_json(text)
+    if structured is not None:
+        verdict, reason = structured
+        detail_text = reason
+    else:
+        verdict = _parse_veto_verdict(text)
+        detail_text = text
+
     if verdict is None:
         return False, f"Gemma's response had no parseable GO/NO-GO verdict - defaulted to NO-GO (fail-safe): \"{text}\"", provenance
     if verdict:
-        return True, f"affirmed by Gemma's autonomous safety review: \"{text}\"", provenance
-    return False, f"vetoed by Gemma's autonomous safety review: \"{text}\"", provenance
+        return True, f"affirmed by Gemma's autonomous safety review: \"{detail_text}\"", provenance
+    return False, f"vetoed by Gemma's autonomous safety review: \"{detail_text}\"", provenance
 
 
 def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetTracker] = None):

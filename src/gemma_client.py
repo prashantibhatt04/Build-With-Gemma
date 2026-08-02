@@ -47,7 +47,18 @@ class GemmaClient:
             return bool(self.settings.ollama_host)
         return False
 
-    def generate(self, prompt: str, system: Optional[str] = None, timeout: int = 120) -> str:
+    def generate(
+        self, prompt: str, system: Optional[str] = None, timeout: int = 120,
+        format: Optional[dict] = None,
+    ) -> str:
+        """format, when given, is a JSON Schema object passed through to
+        Ollama's own schema-constrained generation (real constrained
+        decoding, not a post-hoc parsing hint) - see _generate_ollama.
+        Ollama-only: the hosted API path ignores it silently rather than
+        raising, so a call that starts on Ollama and falls over to the
+        hosted backend (see below) degrades to unstructured text instead
+        of failing outright - callers requesting format should still
+        handle a response that isn't valid JSON."""
         primary_backend = self.settings.gemma_backend
         # Unknown-backend config errors fail fast - not transient, so no
         # retry and no cross-backend fallback attempt for those.
@@ -56,7 +67,7 @@ class GemmaClient:
         last_error: GemmaClientError
         for _ in range(2):  # original attempt + one same-backend retry
             try:
-                text = backend_call(prompt, system, timeout)
+                text = backend_call(prompt, system, timeout, format)
                 self.last_backend_used = primary_backend
                 return text
             except GemmaClientError as exc:
@@ -69,7 +80,7 @@ class GemmaClient:
         if fallback_backend is not None and self._backend_configured(fallback_backend):
             fallback_call = self._resolve_backend_call(fallback_backend)
             try:
-                text = fallback_call(prompt, system, timeout)
+                text = fallback_call(prompt, system, timeout, format)
                 self.last_backend_used = fallback_backend
                 return text
             except GemmaClientError as fallback_error:
@@ -120,7 +131,9 @@ class GemmaClient:
         """
         self.generate(prompt="Reply with the single word: ok")
 
-    def _generate_ollama(self, prompt: str, system: Optional[str], timeout: int) -> str:
+    def _generate_ollama(
+        self, prompt: str, system: Optional[str], timeout: int, format: Optional[dict] = None,
+    ) -> str:
         url = f"{self.settings.ollama_host.rstrip('/')}/api/generate"
         payload = {
             "model": self.settings.gemma_model,
@@ -129,6 +142,12 @@ class GemmaClient:
         }
         if system:
             payload["system"] = system
+        if format is not None:
+            # Real schema-constrained decoding (confirmed directly against
+            # this project's own model before relying on it), not a
+            # post-hoc parsing hint - Ollama's own generation is constrained
+            # to only ever produce JSON matching this shape.
+            payload["format"] = format
 
         try:
             response = requests.post(url, json=payload, timeout=timeout)
@@ -141,7 +160,17 @@ class GemmaClient:
             raise GemmaClientError(f"Unexpected Ollama response shape: {data}")
         return data["response"]
 
-    def _generate_hosted_api(self, prompt: str, system: Optional[str], timeout: int) -> str:
+    def _generate_hosted_api(
+        self, prompt: str, system: Optional[str], timeout: int, format: Optional[dict] = None,
+    ) -> str:
+        # format is intentionally accepted-and-ignored, not raised on: the
+        # only caller requesting it (pipeline._maneuver_veto_check) only
+        # ever runs when the CONFIGURED backend is "ollama" (see
+        # make_decide_node), but generate()'s own cross-backend fallback
+        # can still land here if Ollama is briefly unreachable - silently
+        # degrading to unstructured text (which that caller already knows
+        # to handle) beats raising and losing the fallback response
+        # entirely.
         if not self.settings.gemma_api_key:
             raise GemmaClientError("GEMMA_API_KEY is required for the 'api' backend")
 

@@ -163,3 +163,47 @@ def test_embed_raises_on_unexpected_response_shape(mock_post):
 
     with pytest.raises(GemmaClientError, match="Unexpected Ollama embeddings response shape"):
         client.embed(["text"])
+
+
+def _mock_generate_response(text: str):
+    response = MagicMock()
+    response.json.return_value = {"response": text}
+    response.raise_for_status = MagicMock()
+    return response
+
+
+@patch("src.gemma_client.requests.post")
+def test_generate_passes_format_through_to_ollama_payload(mock_post):
+    mock_post.return_value = _mock_generate_response('{"verdict": "GO", "reason": "ok"}')
+    client = GemmaClient(settings=_settings(gemma_backend="ollama"))
+    schema = {"type": "object", "properties": {"verdict": {"type": "string"}}}
+
+    client.generate(prompt="test", format=schema)
+
+    assert mock_post.call_args.kwargs["json"]["format"] == schema
+
+
+@patch("src.gemma_client.requests.post")
+def test_generate_omits_format_key_when_not_requested(mock_post):
+    mock_post.return_value = _mock_generate_response("plain text")
+    client = GemmaClient(settings=_settings(gemma_backend="ollama"))
+
+    client.generate(prompt="test")
+
+    assert "format" not in mock_post.call_args.kwargs["json"]
+
+
+def test_generate_hosted_api_ignores_format_instead_of_raising():
+    """format is Ollama-only (see GemmaClient.generate's docstring) - the
+    hosted API path must silently ignore it, not raise, so a call that
+    starts on Ollama and cross-backend-falls-over to the hosted API (see
+    test_generate_falls_back_to_other_backend_after_primary_exhausts_retry)
+    degrades to unstructured text instead of failing outright."""
+    client = GemmaClient(settings=_settings(gemma_backend="api"))
+    schema = {"type": "object"}
+
+    with patch.object(client, "_generate_hosted_api", return_value="plain text") as mock_api:
+        result = client.generate(prompt="test", format=schema)
+
+    assert result == "plain text"
+    assert mock_api.call_args.args[-1] == schema  # received it, didn't error

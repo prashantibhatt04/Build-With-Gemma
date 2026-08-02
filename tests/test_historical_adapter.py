@@ -12,7 +12,7 @@ class FakeGemmaClient:
     def __init__(self):
         self.settings = SimpleNamespace(gemma_model="fake-model", gemma_backend="ollama")
 
-    def generate(self, prompt: str, system=None, timeout: int = 60) -> str:
+    def generate(self, prompt: str, system=None, timeout: int = 60, format=None) -> str:
         return "GO - stubbed response."
 
 

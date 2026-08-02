@@ -171,6 +171,18 @@ flowchart TD
     J --> P
 ```
 
+The veto check's GO/NO-GO verdict is requested as real JSON-schema-
+constrained output from Ollama (`{"verdict": "GO"|"NO-GO", "reason": ...}`,
+confirmed directly against this project's own model before relying on
+it), not parsed out of free text - real constrained decoding, so the
+response is guaranteed to match that shape rather than hoping a regex
+scan finds the right token. The original free-text scan
+(`_parse_veto_verdict`) still exists as a fallback for the one case
+structured output can't cover: `GemmaClient.generate()`'s own
+cross-backend fallback landing on the hosted API mid-call (if Ollama is
+briefly unreachable), which has no equivalent schema-constraint support
+wired up here and returns plain text instead.
+
 ### Path 2 — Cloud (hosted API): human-in-the-loop
 
 ```mermaid
@@ -519,7 +531,13 @@ submission is done. Three small, mechanical changes:
   actually embedding and ranking real logged entries (local Ollama,
   cosine similarity), then having Gemma answer from only what was
   retrieved - grounded and checkable, not guessed.
-- **Verified, not just built.** 164 automated tests, plus every major path
+- **Structured where it's safety-relevant.** The maneuver veto verdict is
+  requested as real JSON-schema-constrained output from Ollama, not
+  parsed out of free text - genuine constrained decoding eliminates the
+  exact class of "the model phrased it slightly differently" ambiguity
+  the original regex-based parser existed to paper over, with that
+  original parser kept on as a documented fallback, not deleted.
+- **Verified, not just built.** 180 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -533,7 +551,8 @@ submission is done. Three small, mechanical changes:
 
 Every phase originally scoped for this submission, plus the visual orbit
 plot, a second real hazard type (orbital decay), a live tracking view of
-real crewed stations, and retrieval-augmented mission-log search added
+real crewed stations, retrieval-augmented mission-log search, and
+structured JSON output for the safety-critical veto verdict added
 afterward, is now built. Further extensions (a third hazard type, e.g.
 attitude/pointing loss) remain open-ended, not tracked as committed next
 steps.

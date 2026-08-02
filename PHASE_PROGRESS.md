@@ -389,3 +389,61 @@ confirmed via the raw log file afterward that DecisionLogger.approve_maneuver
 actually ran (maneuver_approval.mode="human", approved_by="dashboard-
 operator", verified_clearance populated) and the UI correctly dropped to
 "Pending human approval (2)" immediately after.
+
+## Phase 12 — Historical replay/backtest
+Status: done
+Added src/ingestion/historical_adapter.py (HistoricalReplayAdapter):
+replays a real, documented historical conjunction through the exact same
+pipeline live data goes through, unmodified - default event is the 2009
+Iridium 33/Cosmos 2251 collision, the first confirmed accidental
+collision between two intact satellites, and thematically the same
+"cosmos-2251-debris" story already used everywhere else in this project.
+Investigated genuine historical TLE propagation first rather than
+assuming it wasn't possible: confirmed by directly querying it that
+CelesTrak's public gp.php endpoint ignores an EPOCH query parameter and
+always returns the CURRENT TLE regardless - real historical TLE archives
+require Space-Track.org, which needs a real account/credentials this
+project doesn't have and can't obtain on a user's behalf. Rather than
+fake historical propagation or invent numbers, this replays the REAL
+closest-approach prediction exactly as it was documented at the time.
+Every number is sourced and independently corroborated, not invented:
+the 584m predicted closest approach and the report timing (final report
+issued 2009-02-10 15:02 UTC, predicted closest approach ~16:56 UTC the
+same day) come directly from CelesTrak's own historical account
+(celestrak.org/events/collision/) - including that SOCRATES genuinely
+predicted this exact conjunction in all 14 reports issued that week
+(range 117m-1.812km across those reports) but it ranked only #152
+overall in the final report and was never prioritized or acted on - a
+real, documented TRIAGE failure, not a detection failure (directly on-theme
+for "Triage in Light Speed"). NORAD catalog numbers (Iridium 33: 24946,
+Cosmos 2251: 22675), the ~11.7 km/s relative velocity, and the ~789 km
+collision altitude were independently verified via NASA/Wikipedia
+sources, not taken from a single origin.
+TelemetryEvent.source="historical-replay" so it's never mistaken for
+live data anywhere downstream (audit log, dashboard table, display) -
+raw_data also carries historical_event/historical_source/
+historical_actual_outcome fields so the citation and real-world outcome
+travel with the record itself, not just in documentation. Wired into
+scripts/run_demo.py as a new step (prints the full citation/outcome in
+its own panel before showing the system's response) and
+scripts/dashboard.py as a new sidebar button - both go through the real
+src/pipeline.run_once, nothing bypassed. run_id-based event ids follow
+the same uniqueness convention as SyntheticCriticalAdapter.
+5 new tests: the real documented values themselves (NORAD ids, distance,
+velocity, timestamp), event-id uniqueness across runs, limit handling,
+and - the core claim of this phase - an integration test proving the
+real 584m number classifies as CRITICAL and produces a verified maneuver
+through the actual analyze_node/decide_node, not a mocked shortcut.
+Suite: 116/116. Live-verified against real local Ollama twice: a direct
+analyze_node/decide_node call (confirmed CRITICAL classification, a real
+Gemma GO verdict with real reasoning referencing the actual 41.7km
+verified clearance) and a full scripts/run_demo.py --auto run
+end-to-end (confirmed correct integration into the 9-step walkthrough,
+correct summary totals). One honest, minor imperfection noted rather
+than hidden: Gemma's own narration describes the event in present/future
+tense ("a close encounter is predicted...") since neither analyze_node's
+nor decide_node's prompts are historical-replay-aware - the surrounding
+demo step's own panel (title, citation, real outcome) and the persisted
+source="historical-replay" field both make the historical framing clear
+regardless, so this wasn't judged worth adding replay-specific prompt
+branching for.

@@ -38,6 +38,7 @@ from src.config import Settings, settings
 from src.display import render_entries
 from src.gemma_client import GemmaClient
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
+from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
@@ -148,6 +149,31 @@ def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
     # the fixed budget/delta-v math above - a good candidate for the
     # separate post-hoc human-review step below.
     ctx.reviewable_event_id = entries[-1].telemetry.event_id
+
+
+def _step_historical_replay(ctx: DemoContext) -> None:
+    adapter = HistoricalReplayAdapter(run_id=ctx.run_id)
+    entries = run_once(adapter=adapter, limit=1)
+    entry = entries[0]
+    raw = entry.telemetry.raw_data
+
+    ctx.console.print(Panel(
+        f"{raw['historical_event']}\n\n"
+        f"Source: {raw['historical_source']}\n\n"
+        f"What actually happened: {raw['historical_actual_outcome']}",
+        title="HISTORICAL RECORD — NOT A LIVE RISK",
+        title_align="left",
+        border_style="cyan",
+    ))
+    render_entries(entries, console=ctx.console)
+    ctx.console.print(
+        f"\nThis system's deterministic threshold (<5km = CRITICAL) classified the "
+        f"real, documented {raw['min_distance_km'] * 1000:.0f}m prediction as "
+        f"[bold red]{entry.finding.severity.value.upper()}[/bold red] - correctly "
+        "and unambiguously, using the exact same math as every other event in "
+        "this walkthrough. Nothing was special-cased for this replay."
+    )
+    ctx.all_entries.extend(entries)
 
 
 def _step_failover(ctx: DemoContext) -> None:
@@ -354,6 +380,29 @@ STEPS: list[Step] = [
             "gets verified."
         ),
         action=_step_critical_maneuver_and_budget,
+    ),
+    Step(
+        phase="Phase 12",
+        title="Historical replay: would this system have caught a real collision?",
+        explanation=(
+            "Everything above uses live or synthetic data. This step "
+            "instead replays a REAL, documented historical conjunction "
+            "through the exact same pipeline, unmodified - the 2009 "
+            "Iridium 33/Cosmos 2251 collision, the first confirmed "
+            "accidental collision between two intact satellites. The "
+            "numbers aren't invented: CelesTrak's own account of this "
+            "event (celestrak.org/events/collision/) documents that its "
+            "SOCRATES conjunction-screening system predicted a 584m "
+            "closest approach in its final report before the collision - "
+            "and had predicted this same conjunction in all 14 reports "
+            "issued that week. It just never made the priority list (rank "
+            "#152 that day) and nobody acted on it - a triage failure, not "
+            "a detection failure. This step feeds that real 584m number "
+            "into this system's ordinary, unmodified severity threshold "
+            "and watches what happens - no special-casing for this being "
+            "a historical replay."
+        ),
+        action=_step_historical_replay,
     ),
     Step(
         phase="Phase 4",

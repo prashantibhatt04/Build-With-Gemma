@@ -27,6 +27,13 @@ Every decision — including whether its explanation came from Gemma or a
 deterministic fallback, and who (if anyone) approved a maneuver — is
 written to an append-only JSON-lines audit log.
 
+It's also validated against a real historical failure, not just live or
+synthetic data: replaying the real, documented 2009 Iridium 33/Cosmos
+2251 collision — the first confirmed satellite-satellite collision —
+through this system's unmodified pipeline shows it would have classified
+the real 584m SOCRATES prediction as CRITICAL, against a real event where
+that same warning existed but was never prioritized or acted on.
+
 **See [`DEMO.md`](DEMO.md) for a full stage-by-stage walkthrough**, or
 just run the guided demo script directly (see below). **See
 [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md)** for what was built in each
@@ -45,6 +52,9 @@ phase and why.
   cross-group orbital-mechanics conjunction screening (with disk caching)
 - `src/ingestion/synthetic_adapter.py` — synthetic CRITICAL-range fixture
   (real data rarely produces one on demand), shared by the demo and dashboard
+- `src/ingestion/historical_adapter.py` — replays a real, documented past
+  conjunction (the 2009 Iridium 33/Cosmos 2251 collision) through the
+  unmodified pipeline
 - `src/pipeline.py` — the LangGraph pipeline: `analyze -> decide -> log`
 - `src/logging_utils.py` — append-only JSON-lines decision audit log,
   plus human-review and maneuver-approval workflows

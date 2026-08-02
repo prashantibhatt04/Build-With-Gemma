@@ -234,15 +234,45 @@ mock, not a second copy of the pipeline's decision logic:
   the same way `scripts/approve_maneuver.py` does.
 - **Full decision table** and an **inspect/mark-reviewed panel** for any
   logged decision, wired to `DecisionLogger.mark_reviewed`.
-- Two sidebar actions generate real new activity without leaving the
+- Three sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
-  screening described above), and running the synthetic CRITICAL fixture
-  to demo the maneuver/approval path on demand.
+  screening described above), running the synthetic CRITICAL fixture, and
+  replaying a real historical collision (see below).
 
 The dashboard's maneuver-state classification (which of the six states a
 decision is in) reuses the exact same `classify_decision_status` function
 the terminal renderer uses — the two views are structurally incapable of
 disagreeing with each other about what state a decision is in.
+
+## Historical replay: would this system have caught a real collision?
+
+Everything else in this project runs on live or synthetic data.
+`HistoricalReplayAdapter` (`src/ingestion/historical_adapter.py`) instead
+replays a **real, documented** historical conjunction through the exact
+same, unmodified pipeline — by default, the 2009 Iridium 33/Cosmos 2251
+collision, the first confirmed accidental collision between two intact
+satellites, and the same real event the `cosmos-2251-debris` data used
+throughout this project traces back to.
+
+The numbers aren't invented. CelesTrak's own historical account
+([celestrak.org/events/collision](https://celestrak.org/events/collision/))
+documents that its SOCRATES conjunction-screening system predicted a
+**584m** closest approach in its final report before the collision
+(issued 2009-02-10 15:02 UTC, predicted closest approach ~16:56 UTC the
+same day) — and had predicted this same conjunction in **all 14 reports**
+issued that week. It just never made the priority list (rank #152 that
+day, out of a much larger set of predicted conjunctions industry-wide)
+and nobody acted on it. **This was a triage failure, not a detection
+failure** — a real, documented example of exactly the problem this
+track's name names. NORAD catalog numbers, the ~11.7 km/s relative
+velocity, and the ~789 km collision altitude were independently
+corroborated against NASA/Wikipedia sources, not taken from one origin.
+
+Feeding that real 584m number into this system's ordinary, unmodified
+severity threshold (<5km = CRITICAL) classifies it as CRITICAL and
+computes a maneuver — no special-casing for this being a replay. Try it:
+`python scripts/run_demo.py` (Step 4) or the dashboard's "Replay
+historical event" button.
 
 ## What the demo shows, step by step
 
@@ -259,16 +289,19 @@ in order:
    verification, budget depletion, and — depending on this machine's
    backend — either Gemma's own autonomous GO/NO-GO safety review
    (local) or live human-approval prompts (cloud).
-4. **Local/cloud failover** — proves the system recovers automatically if
+4. **Historical replay** — the real 2009 Iridium 33/Cosmos 2251 collision
+   record, fed through the same unmodified pipeline, proving the
+   deterministic threshold would have classified it CRITICAL.
+5. **Local/cloud failover** — proves the system recovers automatically if
    its primary Gemma backend becomes unreachable (skipped on a
    local-only machine, so a local demo never makes an unplanned cloud call).
-5. **Human review** — marks a logged decision as reviewed, persisted to
+6. **Human review** — marks a logged decision as reviewed, persisted to
    the actual audit file, not just held in memory.
-6. **The audit trail itself** — reads back the real, raw, most recent log
+7. **The audit trail itself** — reads back the real, raw, most recent log
    entry, showing every field described above populated for real.
-7. **Automated test suite** — the full suite (network-free, mocked Gemma)
+8. **Automated test suite** — the full suite (network-free, mocked Gemma)
    runs live, proving none of the above happened without a safety net.
-8. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
+9. **Summary** — totals: severities seen, Gemma vs. fallback rationale,
    maneuvers executed (autonomous vs. human-approved) vs. blocked vs.
    rejected.
 
@@ -292,6 +325,8 @@ here's what each one means, for reference:
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 | `object_a_group` / `object_b_group` | Which real CelesTrak group each object came from (e.g. `stations`, `cosmos-2251-debris`) — lets a cross-group "asset vs. debris" conjunction be told apart from a within-group one |
 | `last_scan_stats` | `CelesTrakAdapter` instance attribute (not logged per-event) — what a screening call actually covered: `total_objects`, `total_pairs_screened`, `pairs_refined`, `cross_group_pairs_refined` |
+| `source` (`TelemetryEvent`) | `"celestrak"` (real live), `"synthetic-critical-fixture"` (synthetic), or `"historical-replay"` (real, documented, but historical) — never ambiguous about which |
+| `historical_event` / `historical_source` / `historical_actual_outcome` | Only present for historical replays — the citation and real-world outcome travel with the record itself, not just in documentation |
 
 ## Summary
 
@@ -310,16 +345,20 @@ here's what each one means, for reference:
 - **Nothing hidden.** Every decision, every provenance detail, every
   approval, veto, or rejection is written to an append-only audit log that
   can reconstruct exactly what happened and why, on its own, after the fact.
-- **Verified, not just built.** 111 automated tests, plus every major path
+- **Proven against a real past failure, not just live/synthetic data.**
+  The 2009 Iridium 33/Cosmos 2251 collision — a real, documented triage
+  failure — classifies as CRITICAL through this system's ordinary,
+  unmodified severity threshold, using the real 584m SOCRATES prediction.
+- **Verified, not just built.** 116 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
   browser against the real accumulated audit log, including clicking a
   real Approve button and confirming the resulting write to disk.
 
-**What's next:** historical replay/backtest against a real past
-close-approach event, tracked in `PHASE_PROGRESS.md`, not yet committed
-to.
+Every phase originally scoped for this submission is now built. Further
+ideas (a visual orbit plot, multi-hazard triage beyond conjunctions) are
+open-ended, not tracked as committed next steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

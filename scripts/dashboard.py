@@ -9,12 +9,13 @@ unit-tested; this file is UI wiring only.
 Run:
     streamlit run scripts/dashboard.py
 
-Two buttons in the sidebar can generate NEW real activity for the log to
-show: fetching live CelesTrak conjunctions (Phase 10's cross-group
-screening), and running the synthetic CRITICAL fixture (real orbital data
-rarely produces a CRITICAL case on demand - see
-src/ingestion/synthetic_adapter.py). Both go through the real pipeline
-(src/pipeline.run_once) - nothing here bypasses or duplicates it.
+Sidebar buttons can generate NEW real activity for the log to show:
+fetching live CelesTrak conjunctions (Phase 10's cross-group screening),
+running the synthetic CRITICAL fixture (real orbital data rarely produces
+a CRITICAL case on demand - see src/ingestion/synthetic_adapter.py), and
+replaying a real documented historical conjunction (Phase 12 - see
+src/ingestion/historical_adapter.py). All three go through the real
+pipeline (src/pipeline.run_once) - nothing here bypasses or duplicates it.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import streamlit as st
 from src.config import settings
 from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
+from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
@@ -136,6 +138,13 @@ def main() -> None:
                 adapter = SyntheticCriticalAdapter(run_id=run_id, id_prefix="conj-dashboard")
                 tracker = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
                 run_once(adapter=adapter, logger=logger, budget_tracker=tracker, limit=4)
+            st.rerun()
+
+        if st.button("Replay historical event (Iridium 33 / Cosmos 2251, 2009)"):
+            with st.spinner("Replaying the real 2009 collision record..."):
+                run_id = uuid.uuid4().hex[:8]
+                adapter = HistoricalReplayAdapter(run_id=run_id)
+                run_once(adapter=adapter, logger=logger, limit=1)
             st.rerun()
 
         st.divider()

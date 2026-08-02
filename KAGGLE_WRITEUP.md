@@ -15,7 +15,14 @@ explanations a human can actually act on — with a human-approval workflow
 for the most severe cases when a human is actually reachable to give one.
 A live browser dashboard (`streamlit run scripts/dashboard.py`) puts that
 approval workflow - and the full decision history - in front of a real
-person instead of only a terminal.
+person instead of only a terminal. And it isn't only tested against live
+or synthetic data: replaying the real, documented 2009 Iridium 33/Cosmos
+2251 collision - the first confirmed accidental collision between two
+intact satellites - through this system's unmodified pipeline shows it
+would have classified the real 584m SOCRATES prediction as CRITICAL,
+against a real event where that same warning existed but was never acted
+on. A triage failure, not a detection failure - which is exactly the
+problem this track is named for.
 
 ## Architecture
 
@@ -63,10 +70,12 @@ independent verification, delta-v budget), `src/gemma_client.py`
 LangGraph nodes), `src/logging_utils.py` (audit log, human-review, and
 maneuver-approval workflows), `src/display.py` (terminal rendering),
 `src/preflight.py` (environment health checks), `scripts/run_demo.py`
-(the guided end-to-end demo), and `scripts/dashboard.py` +
+(the guided end-to-end demo), `scripts/dashboard.py` +
 `src/dashboard_data.py` (the live browser dashboard - UI wiring and its
 Streamlit-free data logic kept in separate files specifically so the
-latter stays directly unit-testable).
+latter stays directly unit-testable), and
+`src/ingestion/historical_adapter.py` (replays a real, documented past
+conjunction through the same unmodified pipeline).
 
 ## How Gemma was used
 
@@ -203,6 +212,22 @@ own, leaving zero cross-group ("asset vs. debris") results even though
 that's the actual point. Both fixed and verified live - see
 `PHASE_PROGRESS.md` Phase 10 for the full detail.
 
+**No public, free API for historical TLE data - so don't fake it.** For
+the historical-replay backtest, the obvious approach would be pulling the
+actual Iridium 33/Cosmos 2251 TLEs from around 2009-02-10 and propagating
+them with the same Skyfield/SGP4 code used elsewhere. Checked directly
+rather than assumed: querying CelesTrak's public `gp.php` endpoint with a
+historical `EPOCH` parameter silently ignores it and returns today's TLE
+regardless - genuine historical archives require Space-Track.org, which
+needs a real account this project doesn't have and can't create on a
+user's behalf. Rather than fake historical propagation with current-day
+TLEs relabeled as 2009 data (which would misrepresent what's actually
+being computed), the replay instead uses the real, independently-sourced
+closest-approach number CelesTrak's own SOCRATES system actually reported
+at the time (584m) - honest about being a documented-record replay, not
+a re-derived one, and clearly labeled as such (`source=
+"historical-replay"`) everywhere it surfaces.
+
 ## Design choices
 
 - **Severity, action, and maneuver physics are 100% deterministic
@@ -248,30 +273,36 @@ that's the actual point. Both fixed and verified live - see
 
 ## Future work
 
-With Gemma's autonomous veto-gate, real cross-group catalog screening,
-and a live dashboard now all built (see above), the next candidate - not
-yet committed to, tracked in `PHASE_PROGRESS.md` - is a historical
-replay/backtest against a real past close-approach event.
+Every phase originally scoped for this submission is now built: the
+autonomous veto-gate, real cross-group catalog screening, a live
+dashboard, and the historical replay (see above). Further ideas - a
+visual orbit plot, multi-hazard triage beyond conjunctions - are
+open-ended, not committed next steps.
 
 ## Verification
 
-111 automated tests (network-free, Gemma calls mocked, CelesTrak network
+116 automated tests (network-free, Gemma calls mocked, CelesTrak network
 calls mocked, the dashboard tested via Streamlit's own AppTest harness)
 cover orbital math (including the decomposed coarse/fine search used for
 scalable screening), severity/confidence derivation, maneuver math,
 budget tracking, Gemma retry/fallback logic, the autonomous maneuver
 veto-check (including its fail-safe defaults), cross-group conjunction
-screening, the dashboard's data transforms and UI wiring, the full
-pipeline, and the human-approval/review workflows. Beyond unit tests,
-every major path in this writeup was also run live end-to-end against a
-real local Ollama instance, a real hosted API key, and real live
-CelesTrak data during development - which is how several of the issues
-described above were actually found, including two specific to real
-cross-group screening (docked-vehicle noise, a dense debris field
-crowding out cross-group results). The dashboard specifically was
-verified in a real browser against the real accumulated audit log,
-including clicking a real Approve button and confirming via the raw log
-file afterward that it actually executed.
+screening, the dashboard's data transforms and UI wiring, the historical
+replay (including an integration test proving the real 584m number
+classifies as CRITICAL through the actual pipeline), the full pipeline,
+and the human-approval/review workflows. Beyond unit tests, every major
+path in this writeup was also run live end-to-end against a real local
+Ollama instance, a real hosted API key, and real live CelesTrak data
+during development - which is how several of the issues described above
+were actually found, including two specific to real cross-group
+screening (docked-vehicle noise, a dense debris field crowding out
+cross-group results). The dashboard specifically was verified in a real
+browser against the real accumulated audit log, including clicking a
+real Approve button and confirming via the raw log file afterward that
+it actually executed. The historical replay was verified live twice:
+directly (confirming CRITICAL classification and a real Gemma GO verdict
+referencing the actual verified clearance) and through a full guided-demo
+run (confirming correct integration and summary totals).
 
 See the [public repository](https://github.com/prashantibhatt04/Build-With-Gemma)
 for full source, `PROJECT_OVERVIEW.md` for a diagram-based walkthrough,

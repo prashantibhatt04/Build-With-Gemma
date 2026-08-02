@@ -72,11 +72,13 @@ type `n` to skip that step) before running it. Covers: a preflight check
 the synthetic CRITICAL/budget-depletion/human-approval scenario (which of
 the two - autonomous local execution vs. cloud proposal awaiting your
 live approve/reject - depends entirely on this machine's `GEMMA_BACKEND`),
-a local/cloud failover proof (**skipped** on a local-only machine -
-`GEMMA_BACKEND=ollama` - since demonstrating it would require a real
-cloud call, which a local-only demo should never make), marking a
-decision human-reviewed, reading back the raw audit log entry, running
-the test suite, and a summary table.
+a replay of the real 2009 Iridium 33/Cosmos 2251 collision proving the
+same severity threshold would have classified it CRITICAL, a local/cloud
+failover proof (**skipped** on a local-only machine - `GEMMA_BACKEND=ollama`
+- since demonstrating it would require a real cloud call, which a
+local-only demo should never make), marking a decision human-reviewed,
+reading back the raw audit log entry, running the test suite, and a
+summary table.
 
 For a non-interactive run (CI / quick smoke-testing, no pauses):
 
@@ -367,6 +369,56 @@ the event ids yourself between runs.
 
 ---
 
+## Stage 5b — Historical replay: a real past collision, not live/synthetic data
+
+Everything above uses live or synthetic data. This replays a REAL,
+documented historical conjunction through the exact same pipeline,
+unmodified:
+
+```bash
+python3 -c "
+from src.pipeline import run_once
+from src.ingestion.historical_adapter import HistoricalReplayAdapter
+entries = run_once(adapter=HistoricalReplayAdapter(run_id='demo'), limit=1)
+e = entries[0]
+print(e.model_dump_json(indent=2))
+"
+```
+
+**What it proves:** the 2009 Iridium 33/Cosmos 2251 collision - the first
+confirmed accidental collision between two intact satellites - is
+replayed using the REAL, documented SOCRATES prediction: 584m, from
+CelesTrak's own account of the event
+([celestrak.org/events/collision](https://celestrak.org/events/collision/)).
+SOCRATES genuinely predicted this exact conjunction in all 14 reports
+issued that week (range 117m-1.812km); the final report, issued
+2009-02-10 15:02 UTC, predicted 584m at ~16:56 UTC the same day. It just
+never made the priority list (rank #152 that day) and nobody acted on it
+- a triage failure, not a detection failure. NORAD catalog numbers
+(Iridium 33: 24946, Cosmos 2251: 22675), the ~11.7 km/s relative
+velocity, and the ~789 km collision altitude were independently
+corroborated against NASA/Wikipedia sources.
+
+Feeding that real number into this system's ordinary, unmodified severity
+threshold (<5km = CRITICAL) - look for `finding.severity: "critical"` in
+the output, exactly like Stage 5's synthetic events, with no
+special-casing for this being a replay. `source: "historical-replay"` and
+the `historical_event`/`historical_source`/`historical_actual_outcome`
+fields in `raw_data` keep this clearly labeled as a documented-record
+replay everywhere it surfaces (audit log, dashboard table), never
+mistaken for live tracking.
+
+**Why not re-derive it from real historical TLEs via SGP4, like Stage 2?**
+Checked directly, not assumed: CelesTrak's public `gp.php` endpoint
+ignores a historical `EPOCH` query parameter and always returns today's
+TLE regardless - genuine historical archives require Space-Track.org,
+which needs a real account this project doesn't have. Rather than fake
+historical propagation with current-day TLEs mislabeled as 2009 data,
+this replays the real closest-approach number that was actually reported
+at the time.
+
+---
+
 ## Stage 6 — Human review, for real
 
 Take the `event_id` from Stage 5's last (budget-insufficient) line and
@@ -439,13 +491,15 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 111 tests, all green - orbital math (including the
+**What it proves:** 116 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing,
 the CelesTrak adapter's cross-group screening (mocked network), maneuver
 math, budget tracking, Gemma client retry/fallback (mocked), Gemma's
-autonomous maneuver veto-check (mocked), terminal rendering for every
-maneuver state, the dashboard's data transforms and UI (via Streamlit's
-AppTest harness), preflight checks, the full pipeline wiring, and the
+autonomous maneuver veto-check (mocked), the historical replay (including
+an integration test proving the real 584m number classifies as CRITICAL
+through the actual pipeline), terminal rendering for every maneuver
+state, the dashboard's data transforms and UI (via Streamlit's AppTest
+harness), preflight checks, the full pipeline wiring, and the
 human-review/maneuver-approval log rewrites - covering everything demoed
 above without needing real network calls for CI/repeatability. (Check
 `PHASE_PROGRESS.md` for the current count if this drifts again as more

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from rich.console import Console
 
-from src.display import render_entries, render_entry
+from src.display import classify_decision_status, render_entries, render_entry
 from src.maneuver import compute_avoidance_maneuver, verify_maneuver
 from src.schemas import (
     AnomalyFinding,
@@ -12,8 +12,10 @@ from src.schemas import (
     DecisionLogEntry,
     GemmaProvenance,
     ManeuverApproval,
+    ManeuverPlan,
     Severity,
     TelemetryEvent,
+    VerifiedClearance,
 )
 
 
@@ -197,6 +199,84 @@ def test_render_entry_handles_non_conjunction_event_without_crashing():
 
     assert "NOMINAL" in output
     assert "dummy-event-1" in output
+
+
+def _plan() -> ManeuverPlan:
+    return compute_avoidance_maneuver(
+        object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0,
+    )
+
+
+def _clearance() -> VerifiedClearance:
+    return verify_maneuver(2.0, _plan())
+
+
+def test_classify_decision_status_returns_none_for_non_critical():
+    decision = Decision(action="continue", rationale="r", made_at=datetime.now(timezone.utc))
+    assert classify_decision_status(decision) is None
+
+
+def test_classify_decision_status_budget_insufficient():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(), budget_insufficient=True,
+    )
+    assert classify_decision_status(decision) == "budget_insufficient"
+
+
+def test_classify_decision_status_awaiting_human_approval():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(), awaiting_human_approval=True,
+    )
+    assert classify_decision_status(decision) == "awaiting_human_approval"
+
+
+def test_classify_decision_status_executed_autonomous():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(), verified_clearance=_clearance(),
+        maneuver_approval=ManeuverApproval(
+            mode="autonomous", approved=True, approved_at=datetime.now(timezone.utc), reason="r",
+        ),
+    )
+    assert classify_decision_status(decision) == "executed_autonomous"
+
+
+def test_classify_decision_status_executed_human_approved():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(), verified_clearance=_clearance(),
+        maneuver_approval=ManeuverApproval(
+            mode="human", approved=True, approved_by="alice",
+            approved_at=datetime.now(timezone.utc), reason="r",
+        ),
+    )
+    assert classify_decision_status(decision) == "executed_human_approved"
+
+
+def test_classify_decision_status_vetoed_by_gemma():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(),
+        maneuver_approval=ManeuverApproval(
+            mode="autonomous", approved=False, approved_by="Gemma",
+            approved_at=datetime.now(timezone.utc), reason="r",
+        ),
+    )
+    assert classify_decision_status(decision) == "vetoed_by_gemma"
+
+
+def test_classify_decision_status_rejected_by_human():
+    decision = Decision(
+        action="abort", rationale="r", made_at=datetime.now(timezone.utc),
+        maneuver_plan=_plan(),
+        maneuver_approval=ManeuverApproval(
+            mode="human", approved=False, approved_by="bob",
+            approved_at=datetime.now(timezone.utc), reason="r",
+        ),
+    )
+    assert classify_decision_status(decision) == "rejected_by_human"
 
 
 def test_render_entries_handles_multiple_entries():

@@ -42,14 +42,20 @@ phase and why.
 - `src/maneuver.py` — simplified deterministic avoidance-maneuver math,
   independent verification, and delta-v budget tracking
 - `src/ingestion/celestrak_adapter.py` — live CelesTrak TLE fetch + real
-  orbital-mechanics conjunction ranking (with disk caching)
+  cross-group orbital-mechanics conjunction screening (with disk caching)
+- `src/ingestion/synthetic_adapter.py` — synthetic CRITICAL-range fixture
+  (real data rarely produces one on demand), shared by the demo and dashboard
 - `src/pipeline.py` — the LangGraph pipeline: `analyze -> decide -> log`
 - `src/logging_utils.py` — append-only JSON-lines decision audit log,
   plus human-review and maneuver-approval workflows
 - `src/display.py` — rich-based color-coded terminal rendering (stdout
-  only — never affects the log file)
+  only — never affects the log file); `classify_decision_status` here is
+  the single source of truth for maneuver state, shared with the dashboard
+- `src/dashboard_data.py` — the dashboard's data transforms, kept
+  Streamlit-free so they're directly unit-testable
 - `src/preflight.py` — config/connectivity/filesystem health checks
-- `scripts/run_demo.py` — **the guided, step-by-step demo** (see below)
+- `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
+- `scripts/dashboard.py` — **the live browser dashboard** (see below)
 - `scripts/check_gemma.py`, `scripts/mark_reviewed.py`,
   `scripts/approve_maneuver.py` — standalone CLI utilities
 - `tests/` — full suite, no live network/Ollama required
@@ -131,6 +137,18 @@ local/cloud failover proof (skipped automatically on a local-only
 machine), human review, the raw audit trail, and the test suite. Add
 `--auto` to run straight through with no pauses. See `DEMO.md` for more
 detail on each step, plus copy-pasteable standalone snippets.
+
+## Run the dashboard
+
+```bash
+streamlit run scripts/dashboard.py
+```
+
+A live, browser-based mission-ops view over the exact same audit log the
+CLI writes to — metrics, a full decision table, and a pending-approval
+inbox with real Approve/Reject buttons. Sidebar buttons can generate real
+new activity (a live CelesTrak scan, or the synthetic CRITICAL scenario)
+without leaving the browser. Opens at `http://localhost:8501` by default.
 
 ## Run the test suite
 

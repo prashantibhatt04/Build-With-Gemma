@@ -40,6 +40,17 @@ class DecisionLogger:
                     return path, i, entry
         return None
 
+    def load_all_entries(self) -> list[DecisionLogEntry]:
+        """Reads every persisted decision across all decisions-*.jsonl
+        files under log_dir, oldest file first, in on-disk line order
+        within each file. Read-only, no interpretation beyond parsing -
+        used by scripts/dashboard.py for the live risk board."""
+        entries = []
+        for path in sorted(Path(self.settings.log_dir).glob("decisions-*.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                entries.append(DecisionLogEntry.model_validate_json(line))
+        return entries
+
     @staticmethod
     def _rewrite_line(path: Path, line_index: int, updated_entry: DecisionLogEntry) -> None:
         """Rewrites a single line of an existing log file in place. The log

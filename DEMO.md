@@ -84,6 +84,20 @@ For a non-interactive run (CI / quick smoke-testing, no pauses):
 python scripts/run_demo.py --auto
 ```
 
+**Alternative: the live browser dashboard.** Everything the CLI demo logs
+is also viewable (and, for pending approvals, actionable) in a browser:
+
+```bash
+streamlit run scripts/dashboard.py
+```
+
+Opens at `http://localhost:8501`: a metrics row, the full decision table,
+a pending-human-approval inbox with real Approve/Reject buttons, and
+sidebar actions to fetch live CelesTrak data or run the synthetic
+CRITICAL scenario without leaving the browser. Reads the exact same
+`logs/decisions-*.jsonl` audit log the CLI writes to - run either one
+first (or both, in either order) and the other will show the same data.
+
 **This is the file to update every time a new phase is added** - append
 a new `Step(...)` to the `STEPS` list in `scripts/run_demo.py` with its
 own self-contained explanation, rather than writing a new script. The
@@ -425,12 +439,13 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 93 tests, all green - orbital math (including the
+**What it proves:** 111 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing,
 the CelesTrak adapter's cross-group screening (mocked network), maneuver
 math, budget tracking, Gemma client retry/fallback (mocked), Gemma's
 autonomous maneuver veto-check (mocked), terminal rendering for every
-maneuver state, preflight checks, the full pipeline wiring, and the
+maneuver state, the dashboard's data transforms and UI (via Streamlit's
+AppTest harness), preflight checks, the full pipeline wiring, and the
 human-review/maneuver-approval log rewrites - covering everything demoed
 above without needing real network calls for CI/repeatability. (Check
 `PHASE_PROGRESS.md` for the current count if this drifts again as more

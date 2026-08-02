@@ -5,11 +5,13 @@ screen.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from .schemas import DecisionLogEntry, Severity
+from .schemas import Decision, DecisionLogEntry, Severity
 
 SEVERITY_STYLE = {
     Severity.NOMINAL: "green",
@@ -21,6 +23,40 @@ SEVERITY_STYLE = {
 
 def _severity_badge(severity: Severity) -> Text:
     return Text(f"[{severity.value.upper()}]", style=SEVERITY_STYLE[severity])
+
+
+def classify_decision_status(decision: Decision) -> Optional[str]:
+    """Classifies which of the mutually-exclusive CRITICAL-maneuver states
+    a Decision is in: "budget_insufficient", "awaiting_human_approval",
+    "executed_autonomous", "executed_human_approved", "vetoed_by_gemma", or
+    "rejected_by_human". Returns None when there's no maneuver at all
+    (non-CRITICAL severity).
+
+    Single source of truth for this branching, shared by render_entry
+    below and scripts/dashboard.py's risk board - both need to categorize
+    the same states and should never be able to drift out of sync with
+    each other.
+    """
+    if decision.maneuver_plan is None:
+        return None
+    if decision.budget_insufficient:
+        return "budget_insufficient"
+    if decision.awaiting_human_approval:
+        return "awaiting_human_approval"
+    if decision.verified_clearance is not None:
+        approval = decision.maneuver_approval
+        if approval is not None and approval.mode == "human":
+            return "executed_human_approved"
+        return "executed_autonomous"
+    approval = decision.maneuver_approval
+    if approval is not None and not approval.approved and approval.mode == "autonomous":
+        return "vetoed_by_gemma"
+    if approval is not None and not approval.approved:
+        return "rejected_by_human"
+    # decide_node always resolves a CRITICAL, budget-affordable maneuver
+    # into exactly one of the states above - reachable here only if that
+    # invariant is ever violated.
+    return "unknown"
 
 
 def render_entry(console: Console, entry: DecisionLogEntry) -> None:
@@ -47,8 +83,9 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     decision = entry.decision
     approval = decision.maneuver_approval
+    status = classify_decision_status(decision)
 
-    if decision.budget_insufficient:
+    if status == "budget_insufficient":
         console.print(Panel(
             f"Required: ~{plan.magnitude_delta_v:.2f} m/s ({plan.direction}) - "
             "NOT executed, insufficient remaining delta-v budget.",
@@ -56,7 +93,7 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title_align="left",
             border_style="yellow",
         ))
-    elif decision.awaiting_human_approval:
+    elif status == "awaiting_human_approval":
         console.print(Panel(
             f"Proposed: {plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s delta-v "
             f"(target clearance {plan.target_clearance_km:.1f}km) - "
@@ -65,9 +102,9 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title_align="left",
             border_style="magenta",
         ))
-    elif decision.verified_clearance is not None:
+    elif status in ("executed_autonomous", "executed_human_approved"):
         clearance = decision.verified_clearance
-        if approval is not None and approval.mode == "human":
+        if status == "executed_human_approved":
             title = f"MANEUVER EXECUTED (approved by {approval.approved_by})"
             border = "green"
         else:
@@ -82,7 +119,7 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title_align="left",
             border_style=border,
         ))
-    elif approval is not None and not approval.approved and approval.mode == "autonomous":
+    elif status == "vetoed_by_gemma":
         # Gemma vetoed a maneuver that deterministic physics already
         # verified as safe (see pipeline._maneuver_veto_check) - distinct
         # from a human rejecting a cloud-pending proposal below, so it gets
@@ -96,7 +133,7 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
             title_align="left",
             border_style="red",
         ))
-    elif approval is not None and not approval.approved:
+    elif status == "rejected_by_human":
         console.print(Panel(
             f"Proposed maneuver ({plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s) "
             f"was REJECTED by {approval.approved_by} - not executed.",

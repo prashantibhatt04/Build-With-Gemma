@@ -13,6 +13,9 @@ predict close approaches, classifies risk with deterministic physics-based
 thresholds, and uses Gemma to turn those findings into plain-language
 explanations a human can actually act on — with a human-approval workflow
 for the most severe cases when a human is actually reachable to give one.
+A live browser dashboard (`streamlit run scripts/dashboard.py`) puts that
+approval workflow - and the full decision history - in front of a real
+person instead of only a terminal.
 
 ## Architecture
 
@@ -59,8 +62,11 @@ independent verification, delta-v budget), `src/gemma_client.py`
 (backend-agnostic Gemma access + failover), `src/pipeline.py` (the
 LangGraph nodes), `src/logging_utils.py` (audit log, human-review, and
 maneuver-approval workflows), `src/display.py` (terminal rendering),
-`src/preflight.py` (environment health checks), and `scripts/run_demo.py`
-(the guided end-to-end demo).
+`src/preflight.py` (environment health checks), `scripts/run_demo.py`
+(the guided end-to-end demo), and `scripts/dashboard.py` +
+`src/dashboard_data.py` (the live browser dashboard - UI wiring and its
+Streamlit-free data logic kept in separate files specifically so the
+latter stays directly unit-testable).
 
 ## How Gemma was used
 
@@ -229,30 +235,43 @@ that's the actual point. Both fixed and verified live - see
   shapes that genuinely have no real signal to derive it from - honest
   about what's real and what isn't, rather than a number that only looks
   computed.
+- **A second UI must not be able to disagree with the first.** Adding the
+  dashboard meant a second surface (Streamlit) now had to interpret the
+  same six mutually-exclusive maneuver states the terminal renderer
+  already handled. Rather than reimplementing that branching, it was
+  extracted into one function (`classify_decision_status`) that both
+  consume - the two views are structurally incapable of drifting out of
+  sync, instead of relying on remembering to update both whenever a new
+  state is added (the way Phase 8 originally required, and the way
+  Phase 9's veto state was, in hindsight, an opportunity to do this
+  extraction sooner).
 
 ## Future work
 
-With Gemma's autonomous veto-gate and real cross-group catalog screening
-now both built (see above), the next candidates - not yet committed to,
-tracked in `PHASE_PROGRESS.md` - are: a visual dashboard for a
-judge-friendly live risk board, and a historical replay/backtest against
-a real past close-approach event.
+With Gemma's autonomous veto-gate, real cross-group catalog screening,
+and a live dashboard now all built (see above), the next candidate - not
+yet committed to, tracked in `PHASE_PROGRESS.md` - is a historical
+replay/backtest against a real past close-approach event.
 
 ## Verification
 
-93 automated tests (network-free, Gemma calls mocked, CelesTrak network
-calls mocked) cover orbital math (including the decomposed coarse/fine
-search used for scalable screening), severity/confidence derivation,
-maneuver math, budget tracking, Gemma retry/fallback logic, the
-autonomous maneuver veto-check (including its fail-safe defaults),
-cross-group conjunction screening, the full pipeline, and the
-human-approval/review workflows. Beyond unit tests, every major path in
-this writeup was also run live end-to-end against a real local Ollama
-instance, a real hosted API key, and real live CelesTrak data during
-development - which is how several of the issues described above were
-actually found, including two specific to real cross-group screening
-(docked-vehicle noise, a dense debris field crowding out cross-group
-results).
+111 automated tests (network-free, Gemma calls mocked, CelesTrak network
+calls mocked, the dashboard tested via Streamlit's own AppTest harness)
+cover orbital math (including the decomposed coarse/fine search used for
+scalable screening), severity/confidence derivation, maneuver math,
+budget tracking, Gemma retry/fallback logic, the autonomous maneuver
+veto-check (including its fail-safe defaults), cross-group conjunction
+screening, the dashboard's data transforms and UI wiring, the full
+pipeline, and the human-approval/review workflows. Beyond unit tests,
+every major path in this writeup was also run live end-to-end against a
+real local Ollama instance, a real hosted API key, and real live
+CelesTrak data during development - which is how several of the issues
+described above were actually found, including two specific to real
+cross-group screening (docked-vehicle noise, a dense debris field
+crowding out cross-group results). The dashboard specifically was
+verified in a real browser against the real accumulated audit log,
+including clicking a real Approve button and confirming via the raw log
+file afterward that it actually executed.
 
 See the [public repository](https://github.com/prashantibhatt04/Build-With-Gemma)
 for full source, `PROJECT_OVERVIEW.md` for a diagram-based walkthrough,

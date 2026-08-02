@@ -335,3 +335,57 @@ multiple times during development, including through a full
 scripts/run_demo.py --auto run against real local Ollama - confirmed fast
 (~0.6s), confirmed cross-group results present, confirmed no docked-
 vehicle noise in the top results.
+
+## Phase 11 — Live mission-ops dashboard
+Status: done
+Added scripts/dashboard.py (Streamlit): a read/act layer over the exact
+same append-only audit log the CLI writes to, not a second copy of the
+pipeline. Run with `streamlit run scripts/dashboard.py`. Shows a metrics
+row (totals by state - executed/vetoed/rejected/awaiting/budget-blocked),
+a live decision table, a "pending human approval" inbox with real
+Approve/Reject buttons wired to DecisionLogger.approve_maneuver, and an
+inspect/mark-reviewed panel wired to DecisionLogger.mark_reviewed.
+Sidebar buttons generate real new activity from inside the dashboard
+itself: "Fetch live CelesTrak conjunctions" (Phase 10's cross-group
+screening) and "Run synthetic CRITICAL scenario" (src/ingestion/
+synthetic_adapter.py) - both go through the real src/pipeline.run_once,
+nothing bypassed.
+Two refactors done first, both to avoid duplicating logic the dashboard
+needed a second copy of:
+1. SyntheticCriticalAdapter was previously defined inline inside
+   scripts/run_demo.py - promoted to src/ingestion/synthetic_adapter.py
+   (with a configurable id_prefix so run_demo.py's existing
+   "conj-run-demo-*" event ids are unchanged) so the dashboard could reuse
+   it instead of duplicating ~30 lines of fixture code. Verified
+   byte-identical event_id output before/after.
+2. display.py's render_entry had six mutually-exclusive maneuver-state
+   branches (budget-insufficient/awaiting-approval/executed-autonomous/
+   executed-human-approved/vetoed/rejected) inlined directly in the Rich
+   rendering code. Extracted the branching itself into
+   classify_decision_status(decision) -> Optional[str], with render_entry
+   rewritten to switch on it - single source of truth so the dashboard's
+   table/metrics can never disagree with the CLI about what state a
+   decision is in. All 9 pre-existing display tests pass unchanged,
+   confirming the refactor didn't alter any rendered output.
+Also added DecisionLogger.load_all_entries() (reads every decisions-*.jsonl
+under log_dir, not just one) and src/dashboard_data.py - the dashboard's
+non-UI logic (row/metric transforms) kept Streamlit-free specifically so
+it's directly unit-testable without simulating a UI, mirroring why
+src/preflight.py's checks are separated from scripts/run_demo.py's
+printing.
+19 new tests: dashboard_data's transforms/aggregation (5, pure, no
+Streamlit), DecisionLogger.load_all_entries (3), classify_decision_status
+direct coverage (7), and 3 streamlit.testing.v1.AppTest-based smoke tests
+for the actual app (loads without exception, shows expected metrics,
+sidebar controls present) - the two sidebar buttons that make real
+network/Gemma calls are deliberately NOT exercised by automated tests,
+consistent with this project's existing rule that the test suite never
+needs live network. Suite: 111/111.
+Live-verified for real: ran the dashboard against the real accumulated
+audit log (144 entries at the time) in an actual browser. Confirmed
+correct metrics, a working 3-item pending-approval inbox with real
+conjunction data, and - critically - clicked a real "Approve" button and
+confirmed via the raw log file afterward that DecisionLogger.approve_maneuver
+actually ran (maneuver_approval.mode="human", approved_by="dashboard-
+operator", verified_clearance populated) and the UI correctly dropped to
+"Pending human approval (2)" immediately after.

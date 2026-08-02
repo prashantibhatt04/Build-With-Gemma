@@ -159,3 +159,34 @@ def test_mark_reviewed_raises_for_unknown_event_id(tmp_path):
 def test_find_entry_returns_none_when_no_logs_exist(tmp_path):
     logger = DecisionLogger(settings=_settings(tmp_path))
     assert logger.find_entry("anything") is None
+
+
+def test_load_all_entries_returns_empty_list_when_no_logs_exist(tmp_path):
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    assert logger.load_all_entries() == []
+
+
+def test_load_all_entries_returns_every_logged_entry_in_order(tmp_path):
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("event-1"))
+    logger.log(_make_entry("event-2"))
+    logger.log(_make_pending_approval_entry("event-3"))
+
+    entries = logger.load_all_entries()
+
+    assert [e.telemetry.event_id for e in entries] == ["event-1", "event-2", "event-3"]
+    assert entries[2].decision.awaiting_human_approval is True
+
+
+def test_load_all_entries_reflects_in_place_rewrites(tmp_path):
+    """mark_reviewed/approve_maneuver rewrite a line in place - confirms
+    load_all_entries picks up the UPDATED content, not a stale copy."""
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("event-1"))
+    logger.mark_reviewed("event-1", reviewed_by="alice")
+
+    entries = logger.load_all_entries()
+
+    assert len(entries) == 1
+    assert entries[0].human_reviewed is True
+    assert entries[0].reviewed_by == "alice"

@@ -24,7 +24,6 @@ import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -38,13 +37,13 @@ from rich.table import Table
 from src.config import Settings, settings
 from src.display import render_entries
 from src.gemma_client import GemmaClient
-from src.ingestion.base_adapter import DataSourceAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
+from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
 from src.pipeline import run_once
 from src.preflight import run_all_checks
-from src.schemas import DecisionLogEntry, TelemetryEvent
+from src.schemas import DecisionLogEntry
 
 
 @dataclass
@@ -68,40 +67,6 @@ class Step:
     title: str
     explanation: str
     action: Callable[[DemoContext], None]
-
-
-class SyntheticCriticalAdapter(DataSourceAdapter):
-    """4 synthetic CRITICAL-range conjunctions sharing one budget tracker.
-    Real data rarely produces CRITICAL (<5km) on demand, so this demos that
-    path - and budget depletion - deterministically. Clearly labeled as
-    synthetic via source/event_id, matching DEMO.md's Stage 5.
-
-    event_id includes run_id so repeat demo runs don't collide on the same
-    id - mark_reviewed/find_entry (DecisionLogger) match on the FIRST
-    logged entry with a given event_id, so a reused id from an earlier run
-    would silently update that older entry instead of this run's.
-    """
-
-    def __init__(self, run_id: str):
-        self.run_id = run_id
-
-    def fetch_batch(self, limit: int) -> list[TelemetryEvent]:
-        events = []
-        for i in range(limit):
-            raw = {
-                "object_a_id": f"9900{i}", "object_a_name": f"SYNTH-A-{i}",
-                "object_b_id": f"9901{i}", "object_b_name": f"SYNTH-B-{i}",
-                "min_distance_km": 3.0,
-                "time_of_closest_approach": "2026-08-01T20:00:00+00:00",
-                "relative_velocity_km_s": 6.0,
-            }
-            events.append(TelemetryEvent(
-                event_id=f"conj-run-demo-{self.run_id}-{i}",
-                timestamp=datetime.now(timezone.utc),
-                source="synthetic-critical-fixture",
-                raw_data=raw,
-            ))
-        return events
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +105,8 @@ def _step_live_orbital_data(ctx: DemoContext) -> None:
 
 def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
     tracker = DeltaVBudgetTracker(starting_budget_m_s=5.0)
-    entries = run_once(adapter=SyntheticCriticalAdapter(run_id=ctx.run_id), budget_tracker=tracker, limit=4)
+    adapter = SyntheticCriticalAdapter(run_id=ctx.run_id, id_prefix="conj-run-demo")
+    entries = run_once(adapter=adapter, budget_tracker=tracker, limit=4)
     render_entries(entries, console=ctx.console)
     ctx.all_entries.extend(entries)
 

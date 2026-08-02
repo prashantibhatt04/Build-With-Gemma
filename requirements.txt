@@ -6,3 +6,4 @@ skyfield
 numpy
 pytest
 rich
+streamlit

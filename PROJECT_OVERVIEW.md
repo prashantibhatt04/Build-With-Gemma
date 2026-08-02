@@ -6,7 +6,8 @@
 (pipeline orchestration), [Pydantic](https://docs.pydantic.dev/) (schema
 validation), [Skyfield](https://rhodesmill.org/skyfield/)/SGP4 (real orbital
 mechanics), [Ollama](https://ollama.com) (local Gemma) and a hosted
-Gemini-style API (cloud Gemma), [Rich](https://rich.readthedocs.io/) (terminal UI).
+Gemini-style API (cloud Gemma), [Rich](https://rich.readthedocs.io/) (terminal UI),
+[Streamlit](https://streamlit.io) (live mission-ops dashboard).
 
 ## The problem
 
@@ -218,6 +219,31 @@ or rejects it (`scripts/approve_maneuver.py`). A single decision can carry
 both, neither, or just one of these — they're independent, and only one
 of them (approval) can stop an action from happening.
 
+## Live dashboard
+
+`streamlit run scripts/dashboard.py` opens a browser-based mission-ops
+view over the exact same append-only audit log the CLI writes to — not a
+mock, not a second copy of the pipeline's decision logic:
+
+- **Metrics row** — totals by state: executed autonomously, executed
+  after human approval, vetoed by Gemma, rejected by a human, still
+  awaiting approval, blocked by budget.
+- **Pending human approval inbox** — every CRITICAL maneuver currently
+  awaiting a decision, with real Approve/Reject buttons wired to
+  `DecisionLogger.approve_maneuver` — clicking one actually resolves it,
+  the same way `scripts/approve_maneuver.py` does.
+- **Full decision table** and an **inspect/mark-reviewed panel** for any
+  logged decision, wired to `DecisionLogger.mark_reviewed`.
+- Two sidebar actions generate real new activity without leaving the
+  browser: fetching live CelesTrak conjunctions (the same cross-group
+  screening described above), and running the synthetic CRITICAL fixture
+  to demo the maneuver/approval path on demand.
+
+The dashboard's maneuver-state classification (which of the six states a
+decision is in) reuses the exact same `classify_decision_status` function
+the terminal renderer uses — the two views are structurally incapable of
+disagreeing with each other about what state a decision is in.
+
 ## What the demo shows, step by step
 
 `python scripts/run_demo.py` walks through all of this live, self-explained,
@@ -284,15 +310,16 @@ here's what each one means, for reference:
 - **Nothing hidden.** Every decision, every provenance detail, every
   approval, veto, or rejection is written to an append-only audit log that
   can reconstruct exactly what happened and why, on its own, after the fact.
-- **Verified, not just built.** 93 automated tests, plus every major path
+- **Verified, not just built.** 111 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
-  asserted to work.
+  asserted to work. The dashboard specifically was verified in a real
+  browser against the real accumulated audit log, including clicking a
+  real Approve button and confirming the resulting write to disk.
 
-**What's next:** ideas for further phases — a visual dashboard for a
-judge-friendly live risk board, historical replay against a real past
-close-approach event — are tracked in `PHASE_PROGRESS.md`, not yet
-committed to.
+**What's next:** historical replay/backtest against a real past
+close-approach event, tracked in `PHASE_PROGRESS.md`, not yet committed
+to.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

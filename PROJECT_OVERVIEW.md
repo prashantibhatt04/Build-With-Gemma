@@ -250,6 +250,9 @@ mock, not a second copy of the pipeline's decision logic:
 - **Live tracking view** — real current positions (not a triage result)
   for CelesTrak's `stations` group, on the same style of 3D globe - see
   below.
+- **Ask about the mission log** — real retrieval-augmented search over
+  this exact audit log (local Ollama embeddings, real cosine-similarity
+  ranking, Gemma answering from only the retrieved entries) - see below.
 - Four sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
   screening described above), running the synthetic CRITICAL fixture,
@@ -303,6 +306,40 @@ at rendering the full ~20,000-object public catalog: it's the exact same
 as the real payload of this whole project (see its module docstring) - a
 small, named, recognizable set of real objects, not an unreadable point
 cloud of anonymous debris fragments.
+
+### Ask about the mission log: retrieval-augmented search, not fine-tuning
+
+Every other view in this dashboard is either a triage result (a
+conjunction, a decay finding) or a snapshot (live positions). "Ask about
+the mission log" is different: it answers plain-English questions about
+the log itself - "which CRITICAL events were vetoed and why?" - by
+actually retrieving the real relevant entries, not by guessing.
+
+How it works (`src/rag.py`): every logged decision's real fields
+(subject, severity, action, rationale, approval state) get embedded via
+a local Ollama embedding model (`nomic-embed-text` by default -
+`GEMMA_EMBED_MODEL`), cached to disk keyed by `event_id` so an unchanged
+log doesn't get re-embedded on every query. The question gets embedded
+the same way, real cosine similarity ranks every entry against it, and
+only the top-K most relevant real entries are handed to Gemma as
+context - with an explicit system instruction to answer ONLY from those
+entries, never from outside knowledge, and to say so if they don't
+contain enough information. The UI shows which real `event_id`s the
+answer was grounded in, so the grounding is checkable, not just claimed.
+
+This is deliberately retrieval, not model fine-tuning: fine-tuning a
+model on this log's (finding → rationale) pairs was considered and set
+aside as a real but separate ML effort (dataset curation, a training
+pass, an evaluation harness) - retrieval gets most of the practical
+benefit (answers grounded in this system's own real history) using only
+data that already exists and infrastructure (Ollama) already running.
+
+Local-only by design: embeddings always go through Ollama regardless of
+which `GEMMA_BACKEND` is configured for narration elsewhere, since the
+hosted Gemini-style API has no embedding endpoint wired up here - a
+reachable local Ollama is required for this specific feature even on an
+otherwise cloud-configured deployment. Available both in the dashboard
+and as a standalone CLI (`python scripts/query_log.py "question"`).
 
 ## Historical replay: would this system have caught a real collision?
 
@@ -477,7 +514,12 @@ submission is done. Three small, mechanical changes:
   using real orbital elements Skyfield already parses from data this
   project already fetches. `schemas.py` always said its shapes were
   "idea-agnostic"; this is that claim actually exercised, not just stated.
-- **Verified, not just built.** 152 automated tests, plus every major path
+- **Not just narration - real retrieval too.** "Ask about the mission
+  log" answers plain-English questions about the real audit trail by
+  actually embedding and ranking real logged entries (local Ollama,
+  cosine similarity), then having Gemma answer from only what was
+  retrieved - grounded and checkable, not guessed.
+- **Verified, not just built.** 164 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -490,10 +532,11 @@ submission is done. Three small, mechanical changes:
   QA pass entry.
 
 Every phase originally scoped for this submission, plus the visual orbit
-plot, a second real hazard type (orbital decay), and a live tracking view
-of real crewed stations added afterward, is now built. Further extensions
-(a third hazard type, e.g. attitude/pointing loss) remain open-ended, not
-tracked as committed next steps.
+plot, a second real hazard type (orbital decay), a live tracking view of
+real crewed stations, and retrieval-augmented mission-log search added
+afterward, is now built. Further extensions (a third hazard type, e.g.
+attitude/pointing loss) remain open-ended, not tracked as committed next
+steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

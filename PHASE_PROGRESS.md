@@ -755,3 +755,78 @@ the real running dashboard, confirmed a real network fetch (visible in
 the spinner + real elapsed time, not instant) returned 21 real objects
 from CelesTrak's live `stations` group, rendered as labeled markers
 (including real names like "KNACKSAT-2") on the 3D globe.
+
+## Phase 16 — Retrieval-augmented search over the real mission log
+Status: done
+Prompted by a planning discussion about how to make the Gemma/Ollama
+integration itself more robust and more useful, not just add another
+hazard type - specifically, what RAG and fine-tuning could add for a
+local Ollama deployment. Presented several options (RAG over the audit
+log, structured-JSON Gemma calls, a third hazard type) with an honest
+assessment of real LoRA fine-tuning's cost (dataset curation, a training
+pass, an eval harness - a genuine ML detour, not something to casually
+bolt on); the user picked RAG over the audit log.
+Design decision made explicit before writing code: this is retrieval,
+answering "what does the real log actually say," not fine-tuning a model
+on it. Every fact in an answer must trace back to a real logged entry -
+same "Gemma narrates, never invents" principle as every other Gemma
+touchpoint in this project, just applied to Q&A instead of description/
+rationale generation.
+Added:
+- `GemmaClient.embed()` (src/gemma_client.py): batch-embeds via Ollama's
+  real `/api/embed` endpoint (`nomic-embed-text` by default -
+  `Settings.gemma_embed_model`, added as a defaulted dataclass field so
+  none of the 5 existing `Settings(...)` call sites across the codebase
+  needed updating). Deliberately Ollama-only and independent of
+  `gemma_backend` - confirmed directly via curl that Ollama exposes both
+  a singular `/api/embeddings` (one input) and a batched `/api/embed`
+  (a list of inputs, one HTTP call) - used the batched one so embedding
+  the whole log doesn't cost one HTTP round-trip per entry.
+- `src/rag.py`: `_entry_to_text` (a purpose-built, information-dense
+  formatter - deliberately NOT a reuse of display.py's/dashboard_data.py's
+  terser "subject" strings, since embedding quality benefits from more
+  real content than a display-width-constrained label); an on-disk
+  embeddings cache keyed by `event_id` (log entries are append-only/
+  immutable in practice, so this is safe) under `data/rag_cache/`,
+  invalidated wholesale if `gemma_embed_model` changes; real cosine-
+  similarity ranking; `answer_question()`, which retrieves the top-K
+  entries and reuses `pipeline._call_gemma_with_provenance` (the same
+  retry/fallback/provenance machinery every other Gemma call in this
+  project already uses) rather than reimplementing it - a cross-module
+  reuse of a "private" function, consistent with this codebase's existing
+  style (tests already reach into `_parse_veto_verdict` etc. the same
+  way). Retrieved `event_id`s are always returned, even when the Gemma
+  call itself fails, so the UI can show real grounding sources regardless
+  of whether narration succeeded.
+- `scripts/query_log.py` (new standalone CLI) and a new "Ask about the
+  mission log" dashboard section (text input + button, wrapped in
+  try/except per the PM-review pattern established just before this
+  phase) - both call the same `answer_question()`, nothing duplicated
+  between them.
+- `.env.example` / `data/rag_cache/` added to `.gitignore` (runtime
+  cache, not source - same treatment as `data/tle_cache/`).
+15 new tests: `tests/test_rag.py` (9 - text formatting, cosine similarity
+edge cases including a zero vector, cache hit/skip behavior, cache
+invalidation on embed-model change, ranking correctness with hand-picked
+vectors, prompt grounding, and the Gemma-failure fallback path) and
+`tests/test_gemma_client.py` (3 new - embed()'s request shape, network
+failure, and unexpected-response-shape handling). All via a duck-typed
+fake client, no real network calls. Suite: 164/164.
+Live-verified twice against the real accumulated audit log (198 real
+entries) and real local Ollama: via the CLI (`python scripts/query_log.py`)
+asking two different real questions - one correctly and honestly reported
+that no vetoed-by-Gemma event existed in the retrieved context rather
+than fabricating one, the other accurately summarized the real historical
+replay's real logged numbers (584m predicted, 41.70km achieved clearance)
+- and via the dashboard, where the first click attempt silently submitted
+an empty query: Streamlit's `text_input` doesn't commit its typed value
+to script state until the field loses focus or Enter is pressed, so
+clicking straight from the text field to the button skipped the commit.
+Not a bug in `src/rag.py` or a code change - just a verification-process
+correction (click, press Enter, then click the button) - but a concrete
+reminder of why live browser verification catches interaction-level
+issues unit tests structurally cannot.
+The first real query took ~32s (one-time embedding of the accumulated
+log against `nomic-embed-text`, cached afterward) plus real `gemma4:e4b`
+generation time; the embedding cache confirmed working via a second query
+reusing it without re-embedding unchanged entries.

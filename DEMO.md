@@ -98,7 +98,9 @@ Opens at `http://localhost:8501`: a "Show live positions" button renders
 a real *current-position* view (not a triage result) for CelesTrak's real
 crewed-stations group - ISS, Tiangong, and their currently-docked
 visiting vehicles - on a 3D globe, independent of any logged event (see
-Stage 2d below). Below that: a metrics row, the full decision table,
+Stage 2d below), and an "Ask about the mission log" box for real
+retrieval-augmented Q&A over the log itself (see Stage 2e below). Below
+that: a metrics row, the full decision table,
 a pending-human-approval inbox with real Approve/Reject buttons, sidebar
 actions to fetch live CelesTrak conjunction data, screen a real CelesTrak
 debris group for decay/re-entry risk, run the synthetic CRITICAL
@@ -307,6 +309,42 @@ attempt at an unbounded live map. And deliberately NOT wired into
 TelemetryEvent/AnomalyFinding/Decision, so forcing it through the guided
 demo's log-writing steps would mean inventing a finding for data that
 doesn't have one.
+
+---
+
+## Stage 2e — Ask about the mission log (retrieval-augmented, not fine-tuned)
+
+```bash
+python scripts/query_log.py "which CRITICAL events were vetoed and why?"
+```
+
+**What it proves:** real retrieval-augmented Q&A over the real audit log
+- not fine-tuning, and every fact must be traceable to a real logged
+entry. Every logged decision's real fields (subject, severity, action,
+rationale) get embedded via a local Ollama embedding model
+(`nomic-embed-text` by default, cached to disk keyed by `event_id` so an
+unchanged log isn't re-embedded on every query - see `src/rag.py`), your
+question gets embedded the same way, real cosine similarity ranks every
+entry against it, and only the top-K most relevant real entries get
+handed to Gemma as context - with an explicit instruction to answer ONLY
+from those entries and say so plainly if they don't contain enough
+information, rather than guessing. The printed output always shows which
+real `event_id`s the answer was grounded in, so the grounding is
+checkable, not just claimed.
+
+Requires a reachable local Ollama for embeddings specifically
+(`ollama pull nomic-embed-text`), even if `GEMMA_BACKEND=api` for
+narration elsewhere - the hosted Gemini-style API has no embedding
+endpoint wired up here. Same feature is in the dashboard too, as an "Ask
+about the mission log" box.
+
+Deliberately NOT model fine-tuning: real LoRA fine-tuning on this log's
+(finding → rationale) pairs was a real option discussed and set aside -
+it's a genuine separate ML effort (dataset curation, a training pass, an
+evaluation harness), not something to casually bolt on. Retrieval gets
+most of the practical benefit (real, checkable grounding in this
+project's own history) using only data and infrastructure that already
+exist.
 
 ---
 
@@ -589,7 +627,7 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 152 tests, all green - orbital math (including the
+**What it proves:** 164 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
@@ -597,7 +635,9 @@ hazard type's severity classification and screening (mocked network,
 plus real Vanguard 1/ISS TLE fixtures exercising Skyfield's own
 perigee/apogee/BSTAR fields), the live tracking view's real position
 computation and figure structure (mocked network, real fixed TLE
-fixtures), maneuver math (including the QA pass's
+fixtures), the mission-log search's embedding cache/invalidation,
+cosine-similarity ranking, and context-grounded prompt construction
+(mocked Ollama calls), maneuver math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
 (mocked), Gemma's autonomous maneuver veto-check (mocked), the historical
 replay (including an integration test proving the real 584m number

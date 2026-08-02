@@ -87,6 +87,30 @@ class GemmaClient:
 
         raise last_error
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Batch-embeds `texts` via Ollama's real /api/embed endpoint
+        (model: settings.gemma_embed_model, default nomic-embed-text).
+
+        Ollama-only, unlike generate(): there's no cross-backend fallback
+        or retry here, and this ALWAYS targets ollama_host regardless of
+        settings.gemma_backend - the hosted Gemini-style API used
+        elsewhere in this project has no embedding endpoint wired up, and
+        src/rag.py (the only caller) is explicitly scoped to local Ollama
+        deployments, not a general-purpose embedding client."""
+        url = f"{self.settings.ollama_host.rstrip('/')}/api/embed"
+        payload = {"model": self.settings.gemma_embed_model, "input": texts}
+
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise GemmaClientError(f"Ollama embeddings unreachable at {url}: {exc}") from exc
+
+        data = response.json()
+        if "embeddings" not in data:
+            raise GemmaClientError(f"Unexpected Ollama embeddings response shape: {data}")
+        return data["embeddings"]
+
     def warm_up(self) -> None:
         """Sends a minimal throwaway prompt to force the model into memory.
 

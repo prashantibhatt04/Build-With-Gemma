@@ -23,6 +23,11 @@ The inspect panel can also render a real orbit plot (3D trajectories +
 distance-over-time) for any celestrak-sourced event, by re-fetching both
 objects' current TLEs and re-propagating with the same physics
 src/orbital.py already uses - see src/orbit_plot_data.py.
+
+"Ask about the mission log" is real retrieval-augmented Q&A over this
+exact log - real local-Ollama embeddings, real cosine-similarity
+ranking, Gemma answering from ONLY the retrieved entries, never outside
+knowledge - see src/rag.py.
 """
 from __future__ import annotations
 
@@ -40,11 +45,13 @@ from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
+from src.gemma_client import GemmaClient
 from src.live_positions import build_live_globe_figure, fetch_live_positions
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
 from src.orbit_plot_data import build_3d_trajectory_figure, build_distance_chart, fetch_trajectory_data
 from src.pipeline import run_once
+from src.rag import answer_question
 from src.schemas import DecisionLogEntry
 
 
@@ -138,6 +145,32 @@ def _render_live_tracking() -> None:
                 return
         st.plotly_chart(build_live_globe_figure(positions), width="stretch")
         st.caption(f"{len(positions)} real objects, positions computed for right now.")
+
+
+def _render_mission_log_search(entries: list[DecisionLogEntry]) -> None:
+    st.subheader("Ask about the mission log")
+    st.caption(
+        "Real retrieval, not fine-tuning: embeds every logged entry via a local "
+        "Ollama embedding model, ranks by real cosine similarity against your "
+        "question, and asks Gemma to answer using ONLY the retrieved entries "
+        "below - never outside knowledge. Requires a reachable local Ollama for "
+        "embeddings regardless of which backend narrates elsewhere."
+    )
+    query = st.text_input("Question", placeholder="e.g. which CRITICAL events were vetoed and why?")
+    if st.button("Search the mission log") and query:
+        with st.spinner("Embedding, ranking, and asking Gemma..."):
+            try:
+                result = answer_question(query, entries, GemmaClient(settings=settings))
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(
+                    f"Couldn't search the mission log: {exc}\n\n"
+                    "Mission-log search needs a reachable local Ollama for embeddings "
+                    "(GEMMA_EMBED_MODEL) even if your primary backend is the hosted API."
+                )
+                return
+        st.write(result["answer"])
+        if result["retrieved_event_ids"]:
+            st.caption(f"Grounded in real logged entries: {', '.join(result['retrieved_event_ids'])}")
 
 
 def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry], operator: str) -> None:
@@ -253,6 +286,9 @@ def main() -> None:
         st.dataframe(entries_to_rows(entries), width="stretch", hide_index=True)
     else:
         st.caption("No logged decisions yet - use the sidebar to generate some.")
+    st.divider()
+
+    _render_mission_log_search(entries)
     st.divider()
 
     _render_review_panel(logger, entries, operator)

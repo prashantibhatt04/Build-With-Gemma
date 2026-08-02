@@ -28,6 +28,12 @@ class Settings:
     # events can't silently execute an unlimited number of maneuvers. See
     # src/maneuver.py:DeltaVBudgetTracker.
     delta_v_budget_m_s: float
+    # Ollama embedding model used ONLY by src/rag.py's mission-log search -
+    # always via Ollama regardless of gemma_backend, since the hosted
+    # Gemini-style API has no embedding endpoint wired up here. Defaulted
+    # (unlike gemma_model/gemma_model_api) so every existing Settings(...)
+    # call site in this codebase keeps working unchanged.
+    gemma_embed_model: str = "nomic-embed-text"
 
 
 def load_settings() -> Settings:
@@ -39,6 +45,7 @@ def load_settings() -> Settings:
         gemma_model_api=os.getenv("GEMMA_MODEL_API", "gemma-4-26b-a4b-it"),
         log_dir=os.getenv("LOG_DIR", "./logs"),
         delta_v_budget_m_s=float(os.getenv("DELTA_V_BUDGET_M_S", "5.0")),
+        gemma_embed_model=os.getenv("GEMMA_EMBED_MODEL", "nomic-embed-text"),
     )
 
 

@@ -1,9 +1,10 @@
 """Unit tests for GemmaClient's retry and cross-backend-fallback behavior.
 No real network calls - the backend methods themselves are mocked."""
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from src.config import Settings
 from src.gemma_client import GemmaClient, GemmaClientError
@@ -121,3 +122,44 @@ def test_rationale_provenance_reflects_cross_backend_fallback():
     assert "api" in provenance.model_used
     assert "ollama" in provenance.model_used
     assert result_state["decision"].rationale == "Recommendation: continue."
+
+
+def _mock_embed_response(embeddings: list[list[float]]):
+    response = MagicMock()
+    response.json.return_value = {"embeddings": embeddings}
+    response.raise_for_status = MagicMock()
+    return response
+
+
+@patch("src.gemma_client.requests.post")
+def test_embed_posts_to_ollama_embed_endpoint_and_returns_vectors(mock_post):
+    mock_post.return_value = _mock_embed_response([[0.1, 0.2], [0.3, 0.4]])
+    client = GemmaClient(settings=_settings())
+
+    result = client.embed(["first text", "second text"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    call_kwargs = mock_post.call_args.kwargs
+    assert mock_post.call_args.args[0] == "http://localhost:11434/api/embed"
+    assert call_kwargs["json"] == {"model": "nomic-embed-text", "input": ["first text", "second text"]}
+
+
+@patch("src.gemma_client.requests.post")
+def test_embed_raises_on_network_failure(mock_post):
+    mock_post.side_effect = requests.RequestException("connection refused")
+    client = GemmaClient(settings=_settings())
+
+    with pytest.raises(GemmaClientError, match="Ollama embeddings unreachable"):
+        client.embed(["text"])
+
+
+@patch("src.gemma_client.requests.post")
+def test_embed_raises_on_unexpected_response_shape(mock_post):
+    response = MagicMock()
+    response.json.return_value = {"unexpected": "shape"}
+    response.raise_for_status = MagicMock()
+    mock_post.return_value = response
+    client = GemmaClient(settings=_settings())
+
+    with pytest.raises(GemmaClientError, match="Unexpected Ollama embeddings response shape"):
+        client.embed(["text"])

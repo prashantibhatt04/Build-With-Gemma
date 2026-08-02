@@ -43,6 +43,12 @@ group for objects with dangerously low perigee altitude, using Skyfield's
 own SGP4 model (no synthetic data, same deterministic-severity /
 Gemma-narrates design as conjunctions).
 
+You can also ask the system about its own history: real
+retrieval-augmented search (local Ollama embeddings, real
+cosine-similarity ranking) lets Gemma answer plain-English questions
+about the audit log using only the real entries it retrieves — grounded
+and checkable, not guessed.
+
 **See [`DEMO.md`](DEMO.md) for a full stage-by-stage walkthrough**, or
 just run the guided demo script directly (see below). **See
 [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md)** for what was built in each
@@ -83,9 +89,14 @@ phase and why.
   `src/orbital.py` already uses
 - `src/live_positions.py` — real *current* positions (not a triage
   result) for CelesTrak's real crewed-stations group, on a 3D globe
+- `src/rag.py` — retrieval-augmented search over the real audit log:
+  local Ollama embeddings, real cosine-similarity ranking, Gemma
+  answering from only the retrieved entries
 - `src/preflight.py` — config/connectivity/filesystem health checks
 - `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
 - `scripts/dashboard.py` — **the live browser dashboard** (see below)
+- `scripts/query_log.py` — standalone CLI for "ask about the mission log"
+  (see `src/rag.py`) outside the browser
 - `scripts/check_gemma.py`, `scripts/mark_reviewed.py`,
   `scripts/approve_maneuver.py` — standalone CLI utilities
 - `tests/` — full suite, no live network/Ollama required
@@ -128,6 +139,14 @@ committed. Pick one (or set up both and switch via `GEMMA_BACKEND`):
    matching `OLLAMA_HOST` in `.env.example`.
 4. In `.env`: `GEMMA_BACKEND=ollama`, `GEMMA_MODEL=gemma4:e4b` (already the
    defaults).
+5. Optional, only for "ask about the mission log" (see below): pull an
+   embedding model —
+   ```bash
+   ollama pull nomic-embed-text
+   ```
+   This is required for mission-log search specifically, regardless of
+   which `GEMMA_BACKEND` you're otherwise using — the hosted API has no
+   embedding endpoint wired up here, so this always goes through Ollama.
 
 **Option B — Cloud, via a hosted Gemini-style API key:**
 
@@ -180,11 +199,31 @@ with real Approve/Reject buttons, and (for any real conjunction event) a
 real 3D orbit plot built by re-propagating live TLE data. A separate
 "Show live positions" button renders a real *current-position* view (not
 a triage result) for CelesTrak's real crewed-stations group — where those
-assets actually are right now, independent of any logged event. Sidebar
-buttons can generate real new activity (a live CelesTrak conjunction
-scan, a real decay/re-entry risk screen, the synthetic CRITICAL scenario,
-or a historical replay) without leaving the browser. Opens at
+assets actually are right now, independent of any logged event. An "Ask
+about the mission log" box answers plain-English questions about the log
+itself with real retrieval-augmented search (see below). Sidebar buttons
+can generate real new activity (a live CelesTrak conjunction scan, a real
+decay/re-entry risk screen, the synthetic CRITICAL scenario, or a
+historical replay) without leaving the browser. Opens at
 `http://localhost:8501` by default.
+
+## Ask about the mission log
+
+```bash
+python scripts/query_log.py "which CRITICAL events were vetoed and why?"
+```
+
+Real retrieval-augmented search over the real audit log, not fine-tuning:
+every logged decision gets embedded via a local Ollama embedding model
+(`nomic-embed-text` by default — cached to disk so an unchanged log isn't
+re-embedded every query), your question gets embedded the same way, real
+cosine similarity ranks every entry against it, and Gemma answers using
+*only* the retrieved real entries — it's explicitly instructed to say so
+if they don't contain enough information, rather than guessing. Prints
+which real `event_id`s the answer was grounded in. Same feature is also
+available in the dashboard. Requires a reachable local Ollama for
+embeddings specifically, even if `GEMMA_BACKEND=api` for narration
+elsewhere — see `src/rag.py`.
 
 ## Run the test suite
 

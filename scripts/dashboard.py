@@ -188,38 +188,54 @@ def main() -> None:
         st.subheader("Generate live activity")
         fetch_limit = st.number_input("CelesTrak results to fetch", min_value=1, max_value=50, value=5)
         if st.button("Fetch live CelesTrak conjunctions"):
-            with st.spinner("Screening real CelesTrak data..."):
-                adapter = CelesTrakAdapter()
-                run_once(adapter=adapter, logger=logger, limit=fetch_limit)
-                stats = adapter.last_scan_stats
-            if stats:
-                st.success(
-                    f"Screened {stats['total_pairs_screened']} pairs across "
-                    f"{stats['total_objects']} objects ({stats['groups']})."
-                )
-            st.rerun()
+            try:
+                with st.spinner("Screening real CelesTrak data..."):
+                    adapter = CelesTrakAdapter()
+                    run_once(adapter=adapter, logger=logger, limit=fetch_limit)
+                    stats = adapter.last_scan_stats
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't fetch live CelesTrak data: {exc}")
+            else:
+                if stats:
+                    st.success(
+                        f"Screened {stats['total_pairs_screened']} pairs across "
+                        f"{stats['total_objects']} objects ({stats['groups']})."
+                    )
+                st.rerun()
 
         if st.button("Run synthetic CRITICAL scenario"):
-            with st.spinner("Running synthetic CRITICAL conjunctions..."):
-                run_id = uuid.uuid4().hex[:8]
-                adapter = SyntheticCriticalAdapter(run_id=run_id, id_prefix="conj-dashboard")
-                tracker = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
-                run_once(adapter=adapter, logger=logger, budget_tracker=tracker, limit=4)
-            st.rerun()
+            try:
+                with st.spinner("Running synthetic CRITICAL conjunctions..."):
+                    run_id = uuid.uuid4().hex[:8]
+                    adapter = SyntheticCriticalAdapter(run_id=run_id, id_prefix="conj-dashboard")
+                    tracker = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
+                    run_once(adapter=adapter, logger=logger, budget_tracker=tracker, limit=4)
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't run the synthetic CRITICAL scenario: {exc}")
+            else:
+                st.rerun()
 
         if st.button("Replay historical event (Iridium 33 / Cosmos 2251, 2009)"):
-            with st.spinner("Replaying the real 2009 collision record..."):
-                run_id = uuid.uuid4().hex[:8]
-                adapter = HistoricalReplayAdapter(run_id=run_id)
-                run_once(adapter=adapter, logger=logger, limit=1)
-            st.rerun()
+            try:
+                with st.spinner("Replaying the real 2009 collision record..."):
+                    run_id = uuid.uuid4().hex[:8]
+                    adapter = HistoricalReplayAdapter(run_id=run_id)
+                    run_once(adapter=adapter, logger=logger, limit=1)
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't replay the historical event: {exc}")
+            else:
+                st.rerun()
 
         if st.button("Screen for orbital decay risk"):
-            with st.spinner("Screening real objects for decay risk..."):
-                run_id = uuid.uuid4().hex[:8]
-                adapter = DecayRiskAdapter(run_id=run_id)
-                run_once(adapter=adapter, logger=logger, limit=5)
-            st.rerun()
+            try:
+                with st.spinner("Screening real objects for decay risk..."):
+                    run_id = uuid.uuid4().hex[:8]
+                    adapter = DecayRiskAdapter(run_id=run_id)
+                    run_once(adapter=adapter, logger=logger, limit=5)
+            except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                st.error(f"Couldn't screen for decay risk: {exc}")
+            else:
+                st.rerun()
 
         st.divider()
         if st.button("Refresh"):

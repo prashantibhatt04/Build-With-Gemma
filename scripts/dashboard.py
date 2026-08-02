@@ -101,11 +101,19 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
             st.caption(entry.decision.rationale)
             col_approve, col_reject = st.columns(2)
             if col_approve.button("Approve", key=f"approve_{entry.telemetry.event_id}", type="primary"):
-                logger.approve_maneuver(entry.telemetry.event_id, approved=True, approved_by=operator)
-                st.rerun()
+                try:
+                    logger.approve_maneuver(entry.telemetry.event_id, approved=True, approved_by=operator)
+                except ValueError as exc:
+                    st.error(f"Couldn't approve this maneuver: {exc}")
+                else:
+                    st.rerun()
             if col_reject.button("Reject", key=f"reject_{entry.telemetry.event_id}"):
-                logger.approve_maneuver(entry.telemetry.event_id, approved=False, approved_by=operator)
-                st.rerun()
+                try:
+                    logger.approve_maneuver(entry.telemetry.event_id, approved=False, approved_by=operator)
+                except ValueError as exc:
+                    st.error(f"Couldn't reject this maneuver: {exc}")
+                else:
+                    st.rerun()
 
 
 def _render_orbit_plot(entry: DecisionLogEntry) -> None:
@@ -235,8 +243,12 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
     if selected.human_reviewed:
         st.caption(f"Already reviewed by {selected.reviewed_by} at {selected.human_reviewed_at}")
     elif st.button("Mark reviewed", key=f"review_{selected_id}"):
-        logger.mark_reviewed(selected_id, reviewed_by=operator)
-        st.rerun()
+        try:
+            logger.mark_reviewed(selected_id, reviewed_by=operator)
+        except ValueError as exc:
+            st.error(f"Couldn't mark this decision reviewed: {exc}")
+        else:
+            st.rerun()
 
     st.divider()
     st.subheader("Orbit plot")

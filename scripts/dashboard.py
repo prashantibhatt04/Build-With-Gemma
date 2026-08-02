@@ -63,7 +63,7 @@ from src.orbit_plot_data import build_3d_trajectory_figure, build_distance_chart
 from src.pipeline import run_once
 from src.rag import answer_question
 from src.schemas import DecisionLogEntry
-from src.trends import build_rationale_source_trend_figure, build_severity_trend_figure, recurring_objects
+from src.trends import build_rationale_source_trend_figure, build_severity_trend_figure, is_real_live_source, recurring_objects
 
 
 def _render_metrics(metrics: dict) -> None:
@@ -170,10 +170,24 @@ def _render_trends(entries: list[DecisionLogEntry]) -> None:
         st.caption("No logged decisions yet.")
         return
 
-    st.plotly_chart(build_severity_trend_figure(entries), width="stretch")
-    st.plotly_chart(build_rationale_source_trend_figure(entries), width="stretch")
+    real_entries = [e for e in entries if is_real_live_source(e)]
+    st.caption(
+        f"{len(real_entries)} of {len(entries)} total logged entries are real, live "
+        "CelesTrak scans - the two charts below exclude synthetic fixtures and the "
+        "historical replay, which are repeatable demo data that would otherwise "
+        "dominate a view about real patterns over time just because a demo was run "
+        "more than once."
+    )
+    if not real_entries:
+        st.caption(
+            "No real live-scan entries yet - use \"Fetch live CelesTrak conjunctions\" "
+            "or \"Screen for orbital decay risk\" in the sidebar to generate some."
+        )
+    else:
+        st.plotly_chart(build_severity_trend_figure(real_entries), width="stretch")
+        st.plotly_chart(build_rationale_source_trend_figure(real_entries), width="stretch")
 
-    st.markdown("**Recurring objects** (most logged appearances first)")
+    st.markdown("**Recurring objects** (most logged appearances first, real and synthetic alike)")
     recurring = recurring_objects(entries, top_n=10)
     if recurring:
         st.dataframe(recurring, width="stretch", hide_index=True)
@@ -181,7 +195,7 @@ def _render_trends(entries: list[DecisionLogEntry]) -> None:
         st.caption("No entries carry a real object identity yet.")
 
 
-def _render_mission_log_search(entries: list[DecisionLogEntry]) -> None:
+def _render_mission_log_search(entries: list[DecisionLogEntry], client: GemmaClient) -> None:
     st.subheader("Ask about the mission log")
     st.caption(
         "Real retrieval, not fine-tuning: embeds every logged entry via a local "
@@ -194,7 +208,7 @@ def _render_mission_log_search(entries: list[DecisionLogEntry]) -> None:
     if st.button("Search the mission log") and query:
         with st.spinner("Embedding, ranking, and asking Gemma..."):
             try:
-                result = answer_question(query, entries, GemmaClient(settings=settings))
+                result = answer_question(query, entries, client)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(
                     f"Couldn't search the mission log: {exc}\n\n"
@@ -229,6 +243,20 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
     _render_orbit_plot(selected)
 
 
+def _get_shared_client() -> GemmaClient:
+    """One GemmaClient per browser session, reused across every button
+    click and rerun - a QA pass found that the old behavior (each click
+    implicitly getting its own fresh client via run_once's client=None
+    default) meant GemmaClient's circuit breaker could never accumulate
+    consecutive failures across separate clicks, only within a single
+    click's own run_once() event batch - defeating the point of a
+    breaker meant to protect against an extended outage spanning
+    multiple real interactions, not just multiple events in one batch."""
+    if "gemma_client" not in st.session_state:
+        st.session_state["gemma_client"] = GemmaClient(settings=settings)
+    return st.session_state["gemma_client"]
+
+
 def main() -> None:
     st.set_page_config(page_title="Deep Space Navigation - Mission Ops", layout="wide")
     st.title("Deep Space Navigation — Mission Ops Dashboard")
@@ -237,6 +265,7 @@ def main() -> None:
         "(logs/decisions-*.jsonl) - not a mock, not a second copy of the pipeline."
     )
 
+    client = _get_shared_client()
     logger = DecisionLogger(settings=settings)
 
     _render_live_tracking()
@@ -258,7 +287,7 @@ def main() -> None:
             try:
                 with st.spinner("Screening real CelesTrak data..."):
                     adapter = CelesTrakAdapter()
-                    run_once(adapter=adapter, logger=logger, limit=fetch_limit)
+                    run_once(adapter=adapter, client=client, logger=logger, limit=fetch_limit)
                     stats = adapter.last_scan_stats
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't fetch live CelesTrak data: {exc}")
@@ -276,7 +305,7 @@ def main() -> None:
                     run_id = uuid.uuid4().hex[:8]
                     adapter = SyntheticCriticalAdapter(run_id=run_id, id_prefix="conj-dashboard")
                     tracker = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
-                    run_once(adapter=adapter, logger=logger, budget_tracker=tracker, limit=4)
+                    run_once(adapter=adapter, client=client, logger=logger, budget_tracker=tracker, limit=4)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't run the synthetic CRITICAL scenario: {exc}")
             else:
@@ -287,7 +316,7 @@ def main() -> None:
                 with st.spinner("Replaying the real 2009 collision record..."):
                     run_id = uuid.uuid4().hex[:8]
                     adapter = HistoricalReplayAdapter(run_id=run_id)
-                    run_once(adapter=adapter, logger=logger, limit=1)
+                    run_once(adapter=adapter, client=client, logger=logger, limit=1)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't replay the historical event: {exc}")
             else:
@@ -298,7 +327,7 @@ def main() -> None:
                 with st.spinner("Screening real objects for decay risk..."):
                     run_id = uuid.uuid4().hex[:8]
                     adapter = DecayRiskAdapter(run_id=run_id)
-                    run_once(adapter=adapter, logger=logger, limit=5)
+                    run_once(adapter=adapter, client=client, logger=logger, limit=5)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't screen for decay risk: {exc}")
             else:
@@ -309,7 +338,7 @@ def main() -> None:
                 with st.spinner("Running synthetic attitude/pointing readings..."):
                     run_id = uuid.uuid4().hex[:8]
                     adapter = SyntheticAttitudeAdapter(run_id=run_id)
-                    run_once(adapter=adapter, logger=logger, limit=4)
+                    run_once(adapter=adapter, client=client, logger=logger, limit=4)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't run the attitude scenario: {exc}")
             else:
@@ -336,7 +365,7 @@ def main() -> None:
     _render_trends(entries)
     st.divider()
 
-    _render_mission_log_search(entries)
+    _render_mission_log_search(entries, client)
     st.divider()
 
     _render_review_panel(logger, entries, operator)

@@ -62,6 +62,16 @@ class DemoContext:
     # on the same hardcoded event_id, and mark_reviewed/find_entry return
     # the FIRST match by event_id, not the most recent one).
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    # ONE GemmaClient shared across every step's run_once() call - a QA
+    # pass found that letting each step default to its own fresh client
+    # (build_pipeline's client=None fallback) meant the circuit breaker
+    # (see GemmaClient) could never actually accumulate consecutive
+    # failures across steps, only within a single step's own event batch -
+    # defeating the point of a breaker meant to protect an "extended
+    # outage" spanning multiple real-world events. _step_failover still
+    # builds its own deliberately-broken client - that's testing a
+    # different, one-off scenario, not part of this shared flow.
+    client: GemmaClient = field(default_factory=GemmaClient)
 
 
 @dataclass
@@ -94,7 +104,7 @@ def _step_live_orbital_data(ctx: DemoContext) -> None:
     # current conjunctions, not a small staged pair. See
     # CelesTrakAdapter's class docstring for how this stays fast.
     adapter = CelesTrakAdapter()
-    entries = run_once(adapter=adapter, limit=2)
+    entries = run_once(adapter=adapter, client=ctx.client, limit=2)
     stats = adapter.last_scan_stats
     if stats:
         ctx.console.print(
@@ -109,7 +119,7 @@ def _step_live_orbital_data(ctx: DemoContext) -> None:
 def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
     tracker = DeltaVBudgetTracker(starting_budget_m_s=5.0)
     adapter = SyntheticCriticalAdapter(run_id=ctx.run_id, id_prefix="conj-run-demo")
-    entries = run_once(adapter=adapter, budget_tracker=tracker, limit=4)
+    entries = run_once(adapter=adapter, client=ctx.client, budget_tracker=tracker, limit=4)
     render_entries(entries, console=ctx.console)
     ctx.all_entries.extend(entries)
 
@@ -155,7 +165,7 @@ def _step_critical_maneuver_and_budget(ctx: DemoContext) -> None:
 
 def _step_historical_replay(ctx: DemoContext) -> None:
     adapter = HistoricalReplayAdapter(run_id=ctx.run_id)
-    entries = run_once(adapter=adapter, limit=1)
+    entries = run_once(adapter=adapter, client=ctx.client, limit=1)
     entry = entries[0]
     raw = entry.telemetry.raw_data
 
@@ -180,7 +190,7 @@ def _step_historical_replay(ctx: DemoContext) -> None:
 
 def _step_decay_risk(ctx: DemoContext) -> None:
     adapter = DecayRiskAdapter(sample_size=200)
-    entries = run_once(adapter=adapter, limit=3)
+    entries = run_once(adapter=adapter, client=ctx.client, limit=3)
     render_entries(entries, console=ctx.console)
     worst = entries[0]
     raw = worst.telemetry.raw_data
@@ -200,9 +210,8 @@ def _step_decay_risk(ctx: DemoContext) -> None:
 
 
 def _step_attitude(ctx: DemoContext) -> None:
-    run_id = uuid.uuid4().hex[:8]
-    adapter = SyntheticAttitudeAdapter(run_id=run_id)
-    entries = run_once(adapter=adapter, limit=4)
+    adapter = SyntheticAttitudeAdapter(run_id=ctx.run_id)
+    entries = run_once(adapter=adapter, client=ctx.client, limit=4)
     render_entries(entries, console=ctx.console)
     severities = ", ".join(f"{e.finding.severity.value.upper()}" for e in entries)
     ctx.console.print(

@@ -1,11 +1,24 @@
 """Backend-agnostic client for talking to Gemma, local or hosted."""
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import requests
 
 from .config import Settings, settings as default_settings
+
+# Circuit breaker for generate() (see GemmaClient._circuit_is_open and
+# friends): after this many CONSECUTIVE failed generate() calls against a
+# given backend, that backend is treated as "open" - real HTTP attempts
+# against it are skipped entirely for CIRCUIT_BREAKER_COOLDOWN_S, rather
+# than every single subsequent event paying the full retry+timeout cost
+# against a backend that's already known to be down. Counted per
+# generate() INVOCATION (after its own same-backend retry is already
+# exhausted), not per raw HTTP attempt - 3 separate real-world events all
+# finding the backend down in a row, not 3 attempts within one call.
+CIRCUIT_BREAKER_THRESHOLD = 3
+CIRCUIT_BREAKER_COOLDOWN_S = 60.0
 
 
 class GemmaClientError(RuntimeError):
@@ -28,6 +41,27 @@ class GemmaClient:
         # Callers (see pipeline._describe_model_used) read this for
         # provenance; None until the first successful call.
         self.last_backend_used: Optional[str] = None
+        # Circuit breaker state, per backend name ("ollama"/"api") - see
+        # module-level constants and _circuit_is_open/_record_success/
+        # _record_failure below. Deliberately per-INSTANCE, not shared
+        # across GemmaClient objects or processes - matches every other
+        # piece of state on this class (last_backend_used included).
+        self._consecutive_failures: dict[str, int] = {}
+        self._circuit_open_until: dict[str, float] = {}
+
+    def _circuit_is_open(self, backend: str) -> bool:
+        open_until = self._circuit_open_until.get(backend)
+        return open_until is not None and time.monotonic() < open_until
+
+    def _record_success(self, backend: str) -> None:
+        self._consecutive_failures[backend] = 0
+        self._circuit_open_until.pop(backend, None)
+
+    def _record_failure(self, backend: str) -> None:
+        count = self._consecutive_failures.get(backend, 0) + 1
+        self._consecutive_failures[backend] = count
+        if count >= CIRCUIT_BREAKER_THRESHOLD:
+            self._circuit_open_until[backend] = time.monotonic() + CIRCUIT_BREAKER_COOLDOWN_S
 
     def _resolve_backend_call(self, backend: str):
         if backend == "ollama":
@@ -65,25 +99,48 @@ class GemmaClient:
         backend_call = self._resolve_backend_call(primary_backend)
 
         last_error: GemmaClientError
-        for _ in range(2):  # original attempt + one same-backend retry
-            try:
-                text = backend_call(prompt, system, timeout, format)
-                self.last_backend_used = primary_backend
-                return text
-            except GemmaClientError as exc:
-                last_error = exc
+        if self._circuit_is_open(primary_backend):
+            # Skip the real HTTP retry entirely - this backend has already
+            # failed CIRCUIT_BREAKER_THRESHOLD times in a row recently, so
+            # a real attempt is very likely to just pay the full
+            # retry+timeout cost again for the same known-down backend.
+            last_error = GemmaClientError(
+                f"Circuit breaker open for '{primary_backend}' after "
+                f"{CIRCUIT_BREAKER_THRESHOLD} consecutive failures - skipping retry "
+                f"for {CIRCUIT_BREAKER_COOLDOWN_S:.0f}s cooldown"
+            )
+        else:
+            for _ in range(2):  # original attempt + one same-backend retry
+                try:
+                    text = backend_call(prompt, system, timeout, format)
+                    self.last_backend_used = primary_backend
+                    self._record_success(primary_backend)
+                    return text
+                except GemmaClientError as exc:
+                    last_error = exc
+            self._record_failure(primary_backend)
 
-        # Primary backend exhausted its retry. Before falling through to the
-        # caller's deterministic fallback, try the other backend once, if
-        # it's actually configured (e.g. don't attempt "api" with no key).
+        # Primary backend exhausted its retry (or its circuit was already
+        # open). Before falling through to the caller's deterministic
+        # fallback, try the other backend once, if it's actually
+        # configured (e.g. don't attempt "api" with no key) and its own
+        # circuit isn't open too.
         fallback_backend = self._other_backend(primary_backend)
         if fallback_backend is not None and self._backend_configured(fallback_backend):
+            if self._circuit_is_open(fallback_backend):
+                raise GemmaClientError(
+                    f"Both backends unreachable - {primary_backend}: {last_error}; "
+                    f"{fallback_backend}: circuit breaker open after "
+                    f"{CIRCUIT_BREAKER_THRESHOLD} consecutive failures"
+                )
             fallback_call = self._resolve_backend_call(fallback_backend)
             try:
                 text = fallback_call(prompt, system, timeout, format)
                 self.last_backend_used = fallback_backend
+                self._record_success(fallback_backend)
                 return text
             except GemmaClientError as fallback_error:
+                self._record_failure(fallback_backend)
                 # Both failed - raise a combined error naming both reasons.
                 # Raising just last_error (the primary's) here would silently
                 # discard the fallback's actual failure reason, which is

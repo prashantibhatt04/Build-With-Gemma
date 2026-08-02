@@ -31,7 +31,12 @@ limited delta-v budget prevents an unlimited number of maneuvers from
 executing silently.
 Every decision — including whether its explanation came from Gemma or a
 deterministic fallback, and who (if anyone) approved a maneuver — is
-written to an append-only JSON-lines audit log.
+written to an append-only JSON-lines audit log, along with the real
+prompt text that was actually sent for that call, not just the
+response. A circuit breaker also short-circuits repeated Gemma calls
+against a backend already known to be down (3 consecutive failures
+opens it for 60s), instead of every subsequent event paying the full
+retry cost.
 
 It's also validated against a real historical failure, not just live or
 synthetic data: replaying the real, documented 2009 Iridium 33/Cosmos

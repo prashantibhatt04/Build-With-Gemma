@@ -113,7 +113,11 @@ def _call_gemma_with_provenance(
     format, when given, is passed through to GemmaClient.generate() for
     real JSON-schema-constrained decoding (Ollama-only - see
     GemmaClient.generate's docstring for the cross-backend-fallback
-    caveat)."""
+    caveat). The returned GemmaProvenance always carries the real prompt
+    text that was sent (regardless of whether Gemma actually answered or
+    the deterministic fallback kicked in) - the point of logging
+    provenance at all is to be able to reconstruct exactly what was
+    asked, not just what came back."""
     start = time.monotonic()
     try:
         # format is only passed through when actually requested, not as an
@@ -141,7 +145,7 @@ def _call_gemma_with_provenance(
             model_used = client.settings.gemma_model
     latency_ms = (time.monotonic() - start) * 1000
     provenance = GemmaProvenance(
-        source=source, model_used=model_used, latency_ms=latency_ms,
+        source=source, model_used=model_used, latency_ms=latency_ms, prompt=prompt,
     )
     return text, provenance
 

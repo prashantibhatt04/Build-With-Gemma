@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from src.config import Settings
-from src.gemma_client import GemmaClient, GemmaClientError
+from src.gemma_client import CIRCUIT_BREAKER_THRESHOLD, GemmaClient, GemmaClientError
 from src.pipeline import make_decide_node
 from src.schemas import AnomalyFinding, Severity, TelemetryEvent
 
@@ -207,3 +207,83 @@ def test_generate_hosted_api_ignores_format_instead_of_raising():
 
     assert result == "plain text"
     assert mock_api.call_args.args[-1] == schema  # received it, didn't error
+
+
+def test_circuit_breaker_opens_after_threshold_and_skips_real_calls():
+    """After CIRCUIT_BREAKER_THRESHOLD consecutive FAILED generate() calls
+    (not raw HTTP attempts - each call already does its own same-backend
+    retry internally), the next call should skip the real backend attempt
+    entirely rather than paying the retry+timeout cost against a backend
+    already known to be down."""
+    client = GemmaClient(settings=_settings(gemma_backend="ollama", gemma_api_key=""))
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("down")) as mock_ollama:
+        for _ in range(CIRCUIT_BREAKER_THRESHOLD):
+            with pytest.raises(GemmaClientError):
+                client.generate(prompt="test")
+        calls_before = mock_ollama.call_count
+        assert calls_before == CIRCUIT_BREAKER_THRESHOLD * 2  # 2 real attempts per call
+
+        with pytest.raises(GemmaClientError, match="[Cc]ircuit breaker"):
+            client.generate(prompt="test")
+
+        assert mock_ollama.call_count == calls_before  # no new real HTTP attempt made
+
+
+def test_circuit_breaker_resets_consecutive_failures_on_success():
+    """A single success in between failures resets the counter - it
+    shouldn't take exactly CIRCUIT_BREAKER_THRESHOLD failures EVER, only
+    that many IN A ROW, to open the circuit."""
+    client = GemmaClient(settings=_settings(gemma_backend="ollama", gemma_api_key=""))
+    assert CIRCUIT_BREAKER_THRESHOLD == 3, "test assumes threshold=3; update the call sequence below if this changes"
+
+    with patch.object(client, "_generate_ollama") as mock_ollama:
+        mock_ollama.side_effect = [
+            GemmaClientError("down"), GemmaClientError("down"),  # call 1: fails
+            GemmaClientError("down"), GemmaClientError("down"),  # call 2: fails (2 in a row so far)
+            "recovered",                                          # call 3: succeeds - resets the counter
+            GemmaClientError("down"), GemmaClientError("down"),  # call 4: fails
+            GemmaClientError("down"), GemmaClientError("down"),  # call 5: fails (2 in a row again, not 4)
+        ]
+
+        for _ in range(2):
+            with pytest.raises(GemmaClientError):
+                client.generate(prompt="test")
+        assert client.generate(prompt="test") == "recovered"
+        for _ in range(2):
+            with pytest.raises(GemmaClientError):
+                client.generate(prompt="test")
+
+        assert client._circuit_is_open("ollama") is False
+
+
+@patch("src.gemma_client.time.monotonic")
+def test_circuit_breaker_allows_a_real_retry_after_cooldown_expires(mock_monotonic):
+    """Once the circuit opens, a real attempt should be skipped while
+    still within the cooldown window, but allowed again once the cooldown
+    has genuinely elapsed - a "half-open" probe, not a permanent block."""
+    # time.monotonic() is called: once when the 3rd failure opens the
+    # circuit (to set open_until), once when the next call finds it still
+    # open, and once more when a later call finds the cooldown expired.
+    mock_monotonic.side_effect = [1000.0, 1010.0, 1070.0]
+    client = GemmaClient(settings=_settings(gemma_backend="ollama", gemma_api_key=""))
+
+    with patch.object(client, "_generate_ollama") as mock_ollama:
+        mock_ollama.side_effect = [
+            GemmaClientError("down"), GemmaClientError("down"),  # call 1
+            GemmaClientError("down"), GemmaClientError("down"),  # call 2
+            GemmaClientError("down"), GemmaClientError("down"),  # call 3 -> opens the circuit
+            "recovered",                                          # call 5 (call 4 is skipped entirely)
+        ]
+
+        for _ in range(3):
+            with pytest.raises(GemmaClientError):
+                client.generate(prompt="test")
+
+        with pytest.raises(GemmaClientError, match="[Cc]ircuit breaker"):
+            client.generate(prompt="test")  # call 4 - still within cooldown, skipped
+        assert mock_ollama.call_count == 6  # unchanged - no real attempt made
+
+        result = client.generate(prompt="test")  # call 5 - cooldown expired, real retry allowed
+        assert result == "recovered"
+        assert mock_ollama.call_count == 7

@@ -1080,3 +1080,151 @@ chart showed real CRITICAL/WARNING/WATCH/NOMINAL counts split across
 Aug 1/Aug 2), and the recurring-objects table rendered as a real
 interactive dataframe (Show/hide columns, Download CSV, Search,
 Fullscreen controls all present) with no errors anywhere on the page.
+
+## Phase 21 — Reliability polish: circuit breaker + full prompt logging
+Status: done
+The last remaining item from the robustness/next-phase planning
+discussion that started Phases 16-20 - explicitly offered as an
+alternative to calling the product feature-complete, and picked over
+that. Two independent, small, targeted improvements, not a new feature.
+Added:
+- `src/gemma_client.py`: `GemmaClient` now tracks CONSECUTIVE failed
+  `generate()` calls per backend name (`_consecutive_failures`,
+  `_circuit_open_until` - per-instance state, same pattern as the
+  existing `last_backend_used`). Counted per INVOCATION (after that
+  call's own same-backend retry is already exhausted), not per raw HTTP
+  attempt - the real-world scenario being solved is "this backend has
+  failed on N separate real events in a row," not "N attempts within one
+  call." After `CIRCUIT_BREAKER_THRESHOLD` (3) consecutive failures, that
+  backend's circuit opens for `CIRCUIT_BREAKER_COOLDOWN_S` (60s) - real
+  HTTP attempts against it are skipped entirely during that window
+  (`_circuit_is_open`, checked before `generate()`'s retry loop), falling
+  straight through to cross-backend failover or the deterministic
+  fallback instead. A single success resets the counter to zero
+  (`_record_success`); once the cooldown elapses, the breaker is
+  half-open by construction - the very next call gets a real attempt
+  again, no separate "probe" state needed since a fresh failure just
+  reopens the circuit with a new cooldown.
+- `src/schemas.py`: `GemmaProvenance` gained `prompt: Optional[str] =
+  None`. `src/pipeline.py`: `_call_gemma_with_provenance` - the single
+  function every real Gemma call in this project already goes through
+  (description/rationale/veto/RAG-answer generation) - now populates it
+  with the real prompt text on BOTH the success and fallback paths, since
+  the question was still genuinely asked even when nothing answered it.
+  `DecisionLogger.log()` already dumps the full Pydantic model to disk
+  (`entry.model_dump_json()`), so this flows into the real audit log with
+  zero changes needed there - confirmed live, not assumed.
+9 new tests: `tests/test_gemma_client.py` (3 - circuit opens after
+threshold and skips the real backend call entirely, a success in the
+middle resets the consecutive count so it takes 3 IN A ROW not 3 ever,
+and a mocked-`time.monotonic` test proving the half-open cooldown-expiry
+retry actually happens) and `tests/test_pipeline_smoke.py` (2 - prompt
+recorded on both the Gemma-success and fallback paths). Suite: 216/216.
+Live-verified against real infrastructure, not just mocks: a real
+`decide_node` call against real Ollama showed the exact real prompt text
+sent (object names, distances, the full HOLD-instruction text) in the
+returned provenance; a full `run_once` through the real pipeline was
+read back via `DecisionLogger.find_entry` afterward, confirming both
+`rationale_provenance.prompt` and `veto_provenance.prompt` survive the
+real JSONL round-trip. For the circuit breaker: a real `GemmaClient`
+pointed at a real deliberately-unreachable host (`http://localhost:1`,
+the same pattern the existing failover demo step already uses) made 3
+real failing connection attempts, then a 4th call failed in ~0.000002s
+instead of a real network attempt, with the raised error explicitly
+naming the circuit breaker - not inferred from mocks, an actual ~2500x
+speedup measured against a real (if deliberately broken) network target.
+
+## QA pass: 4 real gaps found and fixed (post-Phase 21)
+Status: done
+Requested directly ("be a quality analyst and find all bugs"), scoped to
+the parts of the codebase least likely to have already been scrutinized -
+Phases 16-21, built without a dedicated QA pass the way Phases 0-12 got
+one. Found and fixed 4 real issues, all in code that had 100% passing
+tests and had already been live-verified - none were things the existing
+test suite or live-verification steps were positioned to catch, since
+each was an INTEGRATION gap (how correctly-behaving pieces get wired
+together) or a DATA-HONESTY gap (what a chart implies vs. what it
+actually contains), not a broken function.
+
+**1. The Phase 21 circuit breaker could never actually engage.**
+`GemmaClient`'s consecutive-failure tracking was implemented and tested
+correctly in isolation - but every real call site in this app
+(`scripts/dashboard.py`'s 5 buttons, `scripts/run_demo.py`'s 5 steps) let
+`run_once(...)` default `client=None`, so `build_pipeline()` constructed
+a brand-new `GemmaClient` (empty failure counter) on every single click
+or step. The breaker could only ever accumulate failures WITHIN one
+`run_once(limit=N>1)` call's own event batch, never across separate
+interactions - exactly the "extended outage" scenario it was built to
+solve. Phase 21's own live verification used one script holding a single
+persistent client end to end, which is precisely why it didn't surface
+this - the isolated case worked; the integrated case didn't. Fixed by
+threading one shared client through both scripts explicitly:
+`DemoContext.client` (`scripts/run_demo.py`, same pattern already
+established for `DemoContext.run_id`) and a `st.session_state`-backed
+`_get_shared_client()` (`scripts/dashboard.py`), both passed to every
+`run_once(...)` call. `_step_failover`'s own deliberately-broken one-off
+client was left alone - it's testing a different, intentionally isolated
+scenario. Live-verified for real (not mocked): a shared client pointed
+at a genuinely unreachable host, called via `run_once()` 4 separate
+times - `client._consecutive_failures['ollama']` went 1, 2, 3, then
+stayed at 3 on the 4th call (proving the real network attempt was
+skipped, not just fast), with `_circuit_is_open('ollama')` reading
+`True` throughout.
+
+**2. Trends silently mixed real and synthetic data.** The severity-by-day
+and rationale-source-by-day charts aggregated every logged entry
+indiscriminately - after a demo's been run a few times, the CRITICAL bar
+for "today" is mostly `synthetic-critical-fixture`/
+`synthetic-attitude-fixture` noise, not real screened data, which could
+lead a viewer to conclude real CRITICAL conjunctions are common -
+directly contradicting this project's own repeatedly-documented finding
+that real data rarely lands in CRITICAL. Fixed by adding
+`REAL_LIVE_SOURCES`/`is_real_live_source()` (real live CelesTrak scans
+only - `"celestrak"`/`"celestrak-decay"` - deliberately excluding the
+historical replay too, since replaying the same fixed 2009 record on
+every demo run behaves like synthetic data for "trend over time"
+purposes) and filtering both trend charts to real-live entries before
+building them, with an explicit caption stating the real/total counts
+and why synthetic entries are excluded. Live-verified: the real dashboard
+showed "86 of 246 total logged entries are real, live CelesTrak scans"
+and the chart's Y-axis max dropped from ~140 (all entries) to ~40 (real
+only) after the fix.
+
+**3. `recurring_objects` undercounted real objects with unstable
+names.** Grouped by `(object_id, object_name)` instead of `object_id`
+alone, so the same real object would silently split into two separate
+rows if its name ever varied by so much as whitespace between two
+fetches - defeating the point of a view meant to surface real
+recurrence. Fixed by grouping by `object_id` alone (displaying the
+most-recently-seen name) and adding a `"real"` boolean column per row -
+recurring_objects still includes synthetic entries (still real
+information: "did I click this demo button 30 times"), but each row is
+now self-labeled instead of a real object being indistinguishable from
+a demo fixture by format alone. Live-verified: the real "Recurring
+objects" table now shows an unchecked `real` checkbox for every
+`SYNTH-*` row.
+
+**4. Trends day-bucketing could disagree with which log file an entry
+is actually stored in.** `_day()` bucketed by `entry.telemetry.timestamp`
+(set at ingestion, before analyze/decide even run), while
+`DecisionLogger._log_path()` picks the `decisions-YYYY-MM-DD.jsonl` file
+by wall-clock time at the moment `log()` is actually called - normally
+the same instant, but able to diverge right at a UTC-midnight boundary
+if a slow Gemma call (this project has observed 2-35s+ for the hosted
+API) pushes the real write past midnight. Fixed by switching `_day()` to
+`entry.decision.made_at` (set immediately after the Gemma call
+completes, moments before `log_node` writes to disk) - narrows the gap
+from "the full analyze-decide latency" to "log_node's own near-instant
+write," not a perfect fix (still theoretically not the literal write
+instant) but a real, low-cost improvement covered by a dedicated
+regression test using deliberately-differing `timestamp`/`made_at`
+values.
+
+9 new/updated tests across `tests/test_trends.py` and
+`tests/test_pipeline_smoke.py` (grouping-by-id-not-name, synthetic
+objects marked `real: False`, `is_real_live_source` per source, the
+`made_at`-vs-`timestamp` regression, and a dedicated integration test
+proving two separate `run_once()` calls sharing one client accumulate
+circuit-breaker failures instead of resetting). Suite: 221/221. All four
+fixes live-verified against real infrastructure or the real running
+dashboard, not just the updated unit tests.

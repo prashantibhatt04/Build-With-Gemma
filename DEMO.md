@@ -400,28 +400,38 @@ Gemma narration, with no `maneuver_plan`.
 ```bash
 python3 -c "
 from src.logging_utils import DecisionLogger
-from src.trends import rationale_source_counts_by_day, recurring_objects, severity_counts_by_day
+from src.trends import is_real_live_source, rationale_source_counts_by_day, recurring_objects, severity_counts_by_day
 
 entries = DecisionLogger().load_all_entries()
-print('Severity by day:', dict(sorted(severity_counts_by_day(entries).items())))
-print('Rationale source by day:', dict(sorted(rationale_source_counts_by_day(entries).items())))
-print('Top recurring real objects:')
+real_entries = [e for e in entries if is_real_live_source(e)]
+print(f'{len(real_entries)} of {len(entries)} total entries are real, live CelesTrak scans')
+print('Severity by day (real live scans only):', dict(sorted(severity_counts_by_day(real_entries).items())))
+print('Rationale source by day (real live scans only):', dict(sorted(rationale_source_counts_by_day(real_entries).items())))
+print('Top recurring objects (real and synthetic alike):')
 for row in recurring_objects(entries, top_n=5):
-    print(f\"  {row['object_name']} ({row['object_id']}): {row['count']} appearances\")
+    print(f\"  {row['object_name']} ({row['object_id']}): {row['count']} appearances, real={row['real']}\")
 "
 ```
 
 **What it proves:** every other view in this project shows one event or
 one instant - this is the first that looks at the accumulated log's own
 history. `src/trends.py` (pure data transforms, no Streamlit, no new
-network/AI calls) buckets real logged entries by real calendar day
-(matching how `logs/decisions-YYYY-MM-DD.jsonl` files are already
-split) to show severity mix over time and how much narration came from
-Gemma versus the deterministic fallback each day, plus ranks real
-objects by how many separate logged events they appeared in - covering
-both conjunction pairs (each side counted separately) and single-object
-hazards (decay, attitude). The dashboard's "Trends" section renders the
-same data as two Plotly charts plus a table - run the command above
+network/AI calls) buckets logged entries by real calendar day (keyed off
+`decision.made_at`, set right after the Gemma call completes - not
+`telemetry.timestamp`, set at ingestion before analyze/decide even run,
+which could disagree with which `logs/decisions-YYYY-MM-DD.jsonl` file
+an entry actually landed in if a slow Gemma call straddled a UTC-midnight
+boundary) to show severity mix over time and how much narration came
+from Gemma versus the deterministic fallback each day - filtered to
+`is_real_live_source()` entries only (real live CelesTrak scans, not
+synthetic fixtures or the repeated historical replay, which would
+otherwise dominate a "real pattern over time" view just because a demo
+was run more than once) - plus ranks EVERY object (real and synthetic
+alike, each labeled `real`) by how many separate logged events they
+appeared in - covering both conjunction pairs (each side counted
+separately) and single-object hazards (decay, attitude). The dashboard's
+"Trends" section renders the same data as two Plotly charts plus a table
+- run the command above
 first to see the raw numbers behind them.
 
 ---
@@ -761,13 +771,63 @@ which is also correct behavior, just less interesting to watch.)
 
 ---
 
+## Stage 7b — Circuit breaker: an extended outage doesn't keep paying full price
+
+```bash
+python3 -c "
+import time
+from src.config import settings as base_settings, Settings
+from src.gemma_client import CIRCUIT_BREAKER_THRESHOLD, GemmaClient, GemmaClientError
+
+broken = Settings(
+    gemma_backend='ollama', gemma_model=base_settings.gemma_model,
+    ollama_host='http://localhost:1', gemma_api_key='',
+    gemma_model_api=base_settings.gemma_model_api, log_dir=base_settings.log_dir,
+    delta_v_budget_m_s=base_settings.delta_v_budget_m_s,
+)
+client = GemmaClient(settings=broken)
+
+for i in range(CIRCUIT_BREAKER_THRESHOLD):
+    t0 = time.monotonic()
+    try:
+        client.generate(prompt='test')
+    except GemmaClientError:
+        print(f'call {i+1}: real failed attempt in {time.monotonic()-t0:.4f}s')
+
+t0 = time.monotonic()
+try:
+    client.generate(prompt='test')
+except GemmaClientError as e:
+    print(f'call {CIRCUIT_BREAKER_THRESHOLD+1}: {time.monotonic()-t0:.6f}s - {e}')
+"
+```
+
+**What it proves:** the local/cloud failover above already handles a
+transient hiccup, but if a backend stays down for an extended stretch,
+every SINGLE subsequent event would otherwise still pay the full
+retry+timeout cost against a backend already known to be unreachable.
+`GemmaClient` tracks CONSECUTIVE failed `generate()` calls per backend
+(one count per real-world event that found it down, not per raw HTTP
+attempt); after `CIRCUIT_BREAKER_THRESHOLD` (3) in a row, that backend's
+circuit "opens" and real attempts against it are skipped entirely for
+`CIRCUIT_BREAKER_COOLDOWN_S` (60) seconds. The 4th call above should
+fail near-instantly with an error explicitly naming the circuit
+breaker, not a real (even if fast-failing) network attempt - this was
+measured for real against a deliberately-unreachable host
+(`http://localhost:1`, the same pattern the failover step above uses),
+not just asserted from mocks: ~2500x faster in testing. A single
+success resets the count to zero, and once the cooldown elapses the
+next call gets a real "half-open" probe.
+
+---
+
 ## Stage 8 — Full test suite
 
 ```bash
 python -m pytest -v
 ```
 
-**What it proves:** 211 tests, all green - orbital math (including the
+**What it proves:** 221 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
@@ -782,8 +842,10 @@ cosine-similarity ranking, and context-grounded prompt construction
 (mocked Ollama calls), CRITICAL-event webhook alerting's text formatting
 across all three hazard shapes, severity/URL gating, and fail-safe
 network-error handling (mocked), the Trends view's day-bucketing and
-recurring-objects ranking across all three hazard shapes, maneuver math
-(including the QA pass's
+recurring-objects ranking across all three hazard shapes, the circuit
+breaker's open/reset/half-open-retry state machine (mocked time) and
+prompt logging on both the Gemma-success and fallback paths, maneuver
+math (including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
 (mocked), Gemma's autonomous maneuver veto-check - both the structured-
 JSON path and the free-text fallback path (mocked) - the historical

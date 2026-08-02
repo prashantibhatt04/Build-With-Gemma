@@ -8,13 +8,14 @@ from unittest.mock import patch
 import pytest
 
 from src.config import Settings
-from src.gemma_client import GemmaClientError
+from src.gemma_client import CIRCUIT_BREAKER_THRESHOLD, GemmaClient, GemmaClientError
 from src.ingestion.base_adapter import DummyAdapter
 from src.logging_utils import DecisionLogger
 from src.maneuver import DeltaVBudgetTracker
 from src.pipeline import (
     _MANEUVER_VETO_SYSTEM,
     _VETO_JSON_SCHEMA,
+    _call_gemma_with_provenance,
     _extract_final_answer,
     _parse_veto_json,
     _parse_veto_verdict,
@@ -186,6 +187,65 @@ class FailingGemmaClient:
 
     def generate(self, prompt: str, system=None, timeout: int = 60, format=None) -> str:
         raise GemmaClientError("simulated failure")
+
+
+def test_call_gemma_with_provenance_records_the_real_prompt_on_success():
+    """GemmaProvenance.prompt should carry the exact prompt text that was
+    sent - not just a truncated summary, and not just the response - so
+    the audit log can reconstruct exactly what Gemma was asked."""
+    prompt = "A CRITICAL conjunction was detected between SAT-A and SAT-B."
+    text, provenance = _call_gemma_with_provenance(
+        FakeGemmaClient(), prompt=prompt, system="test system prompt", fallback_text="fallback",
+    )
+
+    assert provenance.prompt == prompt
+    assert provenance.source == "gemma"
+
+
+def test_call_gemma_with_provenance_records_the_real_prompt_even_on_fallback():
+    """The prompt was still genuinely sent (and Gemma still failed to
+    answer it) even when the deterministic fallback text is what actually
+    gets used - the audit trail shouldn't lose the fact that this
+    specific question was asked just because nothing answered it."""
+    prompt = "A CRITICAL conjunction was detected between SAT-A and SAT-B."
+    text, provenance = _call_gemma_with_provenance(
+        FailingGemmaClient(), prompt=prompt, system="test system prompt", fallback_text="fallback",
+    )
+
+    assert provenance.prompt == prompt
+    assert provenance.source == "fallback"
+    assert text == "fallback"
+
+
+def test_client_shared_across_separate_run_once_calls_lets_circuit_breaker_accumulate(tmp_path):
+    """Regression test for a QA-found gap: scripts/dashboard.py and
+    scripts/run_demo.py originally let every run_once() call default to
+    client=None, so build_pipeline() constructed a brand-new GemmaClient
+    per call - the circuit breaker (see GemmaClient) could only ever
+    accumulate consecutive failures WITHIN one run_once() call's own
+    event batch, never across separate calls. Both scripts now hold and
+    pass one shared client explicitly - this proves that, once shared,
+    consecutive-failure tracking genuinely spans separate run_once()
+    invocations, not just events within a single one."""
+    settings = Settings(
+        gemma_backend="ollama", gemma_model="fake-model", ollama_host="http://localhost:11434",
+        gemma_api_key="", gemma_model_api="fake-model-api", log_dir=str(tmp_path), delta_v_budget_m_s=5.0,
+    )
+    client = GemmaClient(settings=settings)
+    logger = DecisionLogger(settings=settings)
+
+    with patch.object(client, "_generate_ollama", side_effect=GemmaClientError("down")) as mock_ollama:
+        for _ in range(CIRCUIT_BREAKER_THRESHOLD):
+            run_once(adapter=DummyAdapter(), client=client, logger=logger, limit=1)
+        calls_before = mock_ollama.call_count
+
+        run_once(adapter=DummyAdapter(), client=client, logger=logger, limit=1)
+
+    # The 4th run_once() call's own generate() attempt should have been
+    # skipped entirely - the circuit opened after the 3rd call, and that
+    # state persisted because the SAME client was reused across all 4
+    # separate run_once() invocations.
+    assert mock_ollama.call_count == calls_before
 
 
 def test_pipeline_produces_finding_and_decision_for_every_event(tmp_path):

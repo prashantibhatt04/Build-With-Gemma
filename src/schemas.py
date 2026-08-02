@@ -129,6 +129,13 @@ class GemmaProvenance(BaseModel):
     source: Literal["gemma", "fallback"]
     model_used: str
     latency_ms: float
+    # The real prompt text sent to Gemma for this call - not just the
+    # response, the actual question. None only for provenance built
+    # without going through pipeline._call_gemma_with_provenance (e.g.
+    # test fixtures that don't care about it); every real Gemma call this
+    # project makes populates it, for genuine audit reconstruction of
+    # exactly what was asked, not just what came back.
+    prompt: Optional[str] = None
 
 
 class DecisionLogEntry(BaseModel):

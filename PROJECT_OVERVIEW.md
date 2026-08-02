@@ -238,6 +238,38 @@ or rejects it (`scripts/approve_maneuver.py`). A single decision can carry
 both, neither, or just one of these — they're independent, and only one
 of them (approval) can stop an action from happening.
 
+**A circuit breaker, so an extended outage doesn't keep paying full
+price.** The three-tier retry above already handles a transient hiccup —
+but if a backend is down for an extended stretch, every single
+subsequent event would otherwise still pay the full retry+timeout cost
+against a backend already known to be unreachable. `GemmaClient` tracks
+CONSECUTIVE failed `generate()` calls per backend (not raw HTTP
+attempts — one count per real-world event that found the backend down);
+after 3 in a row, that backend's circuit "opens" and real attempts
+against it are skipped entirely for a 60-second cooldown, falling
+straight through to cross-backend failover (or the deterministic
+fallback) instead. A single success resets the count to zero, and once
+the cooldown elapses the next call gets a real "half-open" probe — if
+Ollama comes back, the very next event notices for real, not after some
+fixed longer wait. A QA pass found the breaker couldn't actually engage
+in practice at first — every dashboard button and demo step let a fresh
+`GemmaClient` get created per call, resetting the counter every time —
+so both `scripts/dashboard.py` and `scripts/run_demo.py` now hold and
+reuse ONE client across their whole session/run, verified live against
+a real unreachable host: the failure count climbed 1, 2, 3, then held
+at 3 on a 4th call instead of incrementing, proving the real network
+attempt was genuinely skipped.
+
+**The audit trail now includes what was actually asked, not just what
+came back.** `GemmaProvenance` already recorded which backend/model
+responded and how long it took; it now also carries the real prompt
+text sent for that specific call. Every real Gemma call this project
+makes goes through one function (`pipeline._call_gemma_with_provenance`),
+so this was a single change point — and it's populated even when the
+deterministic fallback is what actually gets used, since the real
+question was still genuinely asked (and unanswered), which is itself
+worth being able to reconstruct later.
+
 ## Live dashboard
 
 `streamlit run scripts/dashboard.py` opens a browser-based mission-ops
@@ -362,9 +394,8 @@ and as a standalone CLI (`python scripts/query_log.py "question"`).
 Every other dashboard view shows one event (the decision table, the
 inspect panel) or one instant (metrics, live tracking). `src/trends.py`
 is the first view that looks at the log's own history: a stacked-bar
-chart of findings by severity per real day (bucketed to match how the
-log files themselves are already split -
-`logs/decisions-YYYY-MM-DD.jsonl`, not an arbitrary window), a table of
+chart of findings by severity per real day (bucketed by
+`decision.made_at`, not `telemetry.timestamp` - see below), a table of
 which real objects keep showing up across separate scans (ranked by
 appearance count, covering both conjunction pairs and single-object
 hazards), and a chart of how much narration each day genuinely came
@@ -374,11 +405,28 @@ just a cosmetic detail.
 
 Pure data transforms, no Streamlit dependency (same separation
 `dashboard_data.py` already established) and no new network/AI calls -
-purely aggregating what every other phase already logged. Live-verified
-against the real accumulated log (237 real entries across two real
-days at the time of writing): both charts and the recurring-objects
-table rendered correctly with real data, no mocked or synthetic
-numbers standing in.
+purely aggregating what every other phase already logged.
+
+**A QA pass found two real gaps here, both fixed.** First: the two trend
+charts were aggregating every logged entry indiscriminately, mixing real
+CelesTrak scans with synthetic demo fixtures and the repeated historical
+replay - after a demo's been run a few times, the CRITICAL bar for
+"today" could be almost entirely synthetic noise, contradicting this
+project's own documented finding that real data rarely lands in
+CRITICAL. Both charts now filter to `is_real_live_source()` entries only
+(real `"celestrak"`/`"celestrak-decay"` scans - synthetic fixtures and
+the historical replay excluded), with an explicit caption stating the
+real/total counts; live-verified showing "86 of 246 total logged entries
+are real" with the chart's Y-axis max dropping from ~140 to ~40 once
+filtered. The recurring-objects table still shows everything (real and
+synthetic alike - "did I click this demo button 30 times" is still real
+information), but every row is now labeled with a `real` column rather
+than a synthetic object being visually indistinguishable from a real
+one. Second: `recurring_objects` originally grouped by `(object_id,
+object_name)` instead of `object_id` alone, which would silently
+undercount a real object if its name string ever varied by so much as
+whitespace between two fetches - fixed to group by id alone, displaying
+the most-recently-seen name.
 
 ## Historical replay: would this system have caught a real collision?
 
@@ -566,6 +614,7 @@ here's what each one means, for reference:
 | `awaiting_human_approval` | `True` if the maneuver is calculated and affordable, but held pending a human decision (cloud backend only) |
 | `ManeuverApproval.mode` | `"autonomous"` (local, no human — may still be a Gemma veto) or `"human"` (cloud, explicit approve/reject) |
 | `GemmaProvenance.source` | `"gemma"` (real model output) or `"fallback"` (deterministic text — both backends were unreachable) |
+| `GemmaProvenance.prompt` | The real prompt text sent for this specific call — populated even on a `"fallback"` source, since the question was still genuinely asked |
 | `veto_provenance` | Provenance for Gemma's own GO/NO-GO maneuver veto-check (local path, CRITICAL only) — `None` when no veto check was attempted |
 | `human_reviewed` / `reviewed_by` | Post-hoc audit sign-off — independent of maneuver approval, applies to any decision |
 | `object_a_group` / `object_b_group` | Which real CelesTrak group each object came from (e.g. `stations`, `cosmos-2251-debris`) — lets a cross-group "asset vs. debris" conjunction be told apart from a within-group one |
@@ -644,25 +693,35 @@ submission is done. Three small, mechanical changes:
   first view that aggregates the accumulated log's own history - severity
   mix per day, which real objects recur across scans, Gemma-vs-fallback
   narration mix over time - instead of showing one event or one instant.
-- **Verified, not just built.** 211 automated tests, plus every major path
+- **An extended outage doesn't keep paying full price, and the audit
+  trail knows exactly what was asked.** A circuit breaker short-circuits
+  repeated Gemma calls against a backend already known to be down
+  (real-verified: the 4th call after 3 consecutive failures skipped the
+  network attempt entirely), and `GemmaProvenance` now carries the real
+  prompt text sent for every real Gemma call this project makes - not
+  just the response.
+- **Verified, not just built.** 221 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
   browser against the real accumulated audit log, including clicking a
   real Approve button and confirming the resulting write to disk, and the
   3D orbit plot was confirmed rendering genuine elliptical paths by
-  actually rotating it. On top of that, a full independent
-  QA/gap-analysis/fresh-eyes review pass found and fixed 7 real issues
-  after everything above was already "done" - see `PHASE_PROGRESS.md`'s
-  QA pass entry.
+  actually rotating it. On top of that, two independent QA passes found
+  and fixed real issues after everything was already "done" - the
+  original QA/gap-analysis/fresh-eyes pass (7 issues) and a later
+  quality-analyst pass focused on Phases 16-21 (4 more, all integration
+  or data-honesty gaps a passing test suite couldn't have caught) - see
+  `PHASE_PROGRESS.md`'s QA pass entries.
 
 Every phase originally scoped for this submission, plus the visual orbit
 plot, a second real hazard type (orbital decay), a live tracking view of
 real crewed stations, retrieval-augmented mission-log search, structured
 JSON output for the safety-critical veto verdict, a third hazard type
 (attitude/pointing loss, synthetic-only by necessity), real-time webhook
-alerting for CRITICAL events, and a trend/analytics view over the
-accumulated log added afterward, is now built. Further extensions remain
+alerting for CRITICAL events, a trend/analytics view over the
+accumulated log, and reliability polish (a circuit breaker plus full
+prompt logging) added afterward, is now built. Further extensions remain
 open-ended, not tracked as committed next steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage

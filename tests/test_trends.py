@@ -5,6 +5,7 @@ from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvena
 from src.trends import (
     build_rationale_source_trend_figure,
     build_severity_trend_figure,
+    is_real_live_source,
     rationale_source_counts_by_day,
     recurring_objects,
     severity_counts_by_day,
@@ -13,11 +14,12 @@ from src.trends import (
 
 def _entry(
     event_id: str, severity: Severity, timestamp: datetime,
-    raw_data: dict, rationale_source: str = "gemma",
+    raw_data: dict, rationale_source: str = "gemma", source: str = "celestrak",
+    made_at: datetime | None = None,
 ) -> DecisionLogEntry:
-    telemetry = TelemetryEvent(event_id=event_id, timestamp=timestamp, source="celestrak", raw_data=raw_data)
+    telemetry = TelemetryEvent(event_id=event_id, timestamp=timestamp, source=source, raw_data=raw_data)
     finding = AnomalyFinding(event_id=event_id, severity=severity, description="Test.", confidence=0.9)
-    decision = Decision(action="continue", rationale="Test rationale.", made_at=timestamp)
+    decision = Decision(action="continue", rationale="Test rationale.", made_at=made_at or timestamp)
     return DecisionLogEntry(
         telemetry=telemetry, finding=finding, decision=decision,
         rationale_provenance=GemmaProvenance(source=rationale_source, model_used="fake-model", latency_ms=1.0),
@@ -87,7 +89,74 @@ def test_recurring_objects_counts_single_object_hazard_shapes():
 
     result = recurring_objects(entries)
 
-    assert result == [{"object_id": "33821", "object_name": "COSMOS 2251 DEB", "count": 2}]
+    assert result == [{"object_id": "33821", "object_name": "COSMOS 2251 DEB", "count": 2, "real": True}]
+
+
+def test_recurring_objects_groups_by_id_alone_not_by_id_and_name():
+    """Regression test: a real object's name string varying slightly
+    between two separate fetches (e.g. a CelesTrak catalog rename, or
+    stray whitespace) must not split it into two separate rows - the
+    same object_id should always count as one recurring object, no
+    matter what its name looked like on each individual fetch."""
+    entries = [
+        _entry("e1", Severity.WATCH, DAY_1, _decay_raw("33821", "COSMOS 2251 DEB")),
+        _entry("e2", Severity.WATCH, DAY_2, _decay_raw("33821", "COSMOS 2251 DEB ")),  # trailing space
+    ]
+
+    result = recurring_objects(entries)
+
+    assert len(result) == 1
+    assert result[0]["object_id"] == "33821"
+    assert result[0]["count"] == 2
+    # Whichever name was seen LAST is what's displayed - not asserting a
+    # specific one here, just that it didn't split into two rows.
+
+
+def test_recurring_objects_marks_synthetic_objects_as_not_real():
+    entries = [
+        _entry(
+            "e1", Severity.CRITICAL, DAY_1, _conjunction_raw("99000", "SYNTH-A-0", "99010", "SYNTH-B-0"),
+            source="synthetic-critical-fixture",
+        ),
+    ]
+
+    result = recurring_objects(entries)
+
+    assert all(row["real"] is False for row in result)
+
+
+def test_is_real_live_source_true_only_for_celestrak_sources():
+    real_conjunction = _entry("e1", Severity.WATCH, DAY_1, _conjunction_raw("1", "A", "2", "B"), source="celestrak")
+    real_decay = _entry("e2", Severity.WATCH, DAY_1, _decay_raw("1", "A"), source="celestrak-decay")
+    synthetic = _entry(
+        "e3", Severity.CRITICAL, DAY_1, _conjunction_raw("1", "A", "2", "B"), source="synthetic-critical-fixture",
+    )
+    historical = _entry(
+        "e4", Severity.CRITICAL, DAY_1, _conjunction_raw("1", "A", "2", "B"), source="historical-replay",
+    )
+
+    assert is_real_live_source(real_conjunction) is True
+    assert is_real_live_source(real_decay) is True
+    assert is_real_live_source(synthetic) is False
+    assert is_real_live_source(historical) is False
+
+
+def test_day_buckets_by_decision_made_at_not_telemetry_timestamp():
+    """Regression test: the entry's telemetry.timestamp is set at
+    ingestion, before analyze/decide even run - decision.made_at (set
+    right after the Gemma call completes) is much closer to when
+    log_node actually writes the entry to disk, and should be what
+    Trends buckets by, not the earlier ingestion timestamp."""
+    entry = _entry(
+        "e1", Severity.WATCH, timestamp=datetime(2026, 8, 1, 23, 59, 58, tzinfo=timezone.utc),
+        made_at=datetime(2026, 8, 2, 0, 0, 3, tzinfo=timezone.utc),
+        raw_data=_conjunction_raw("1", "A", "2", "B"),
+    )
+
+    counts = severity_counts_by_day([entry])
+
+    assert date(2026, 8, 2) in counts
+    assert date(2026, 8, 1) not in counts
 
 
 def test_recurring_objects_skips_entries_with_no_real_object_identity():

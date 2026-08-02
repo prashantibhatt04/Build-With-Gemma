@@ -1036,3 +1036,47 @@ event_id, action, and the real Gemma-generated rationale text word for
 word; a real WATCH-severity decay reading through the same configured
 receiver produced zero POSTs, confirming the severity gate holds for
 real traffic, not just the mocked unit tests.
+
+## Phase 20 — Trend/analytics view over the accumulated log
+Status: done
+The last item from the robustness/next-phase planning discussion that
+started Phases 16-19. Every dashboard view up to this point showed one
+event (the decision table, the inspect panel) or one instant (metrics,
+live tracking) - nothing showed the accumulated log's own pattern over
+time. By this phase the real log had genuinely accumulated 237 real
+entries across 2 real days (2026-08-01 and 2026-08-02), which made this
+phase's live verification meaningfully real rather than trivially small.
+Added:
+- `src/trends.py`: pure data transforms, no Streamlit dependency (same
+  separation `dashboard_data.py` already established) and no new
+  network/AI calls - purely aggregating what every prior phase already
+  logged. `severity_counts_by_day`/`build_severity_trend_figure`
+  (stacked bar, bucketed by real calendar day - matching how
+  `logs/decisions-YYYY-MM-DD.jsonl` files are already split, not an
+  arbitrary window size). `recurring_objects` (real objects ranked by
+  how many separate logged events they appeared in, covering both
+  conjunction pairs - counting each side separately - and single-object
+  hazards via a small shared `_object_ids_and_names` helper).
+  `rationale_source_counts_by_day`/`build_rationale_source_trend_figure`
+  (Gemma vs. deterministic-fallback mix per day - a day where fallback
+  spikes is a real signal Gemma was unreachable a lot that day, not
+  just a cosmetic detail).
+- `scripts/dashboard.py`: new "Trends" section (two Plotly charts + a
+  recurring-objects table) wired in right after "All decisions", since
+  it's another lens on the same decision data, not a Q&A tool like
+  mission-log search.
+8 new tests (`tests/test_trends.py`): day-bucketing for both severity
+and rationale-source counts (confirming real-calendar-day grouping, not
+exact-timestamp grouping), figure trace structure for both charts,
+recurring-objects ranking across conjunction-pair and single-object
+shapes (including a regression-style test proving a conjunction's TWO
+objects both get counted, not just one), top_n/ordering behavior, and
+graceful handling of telemetry with no real object identity at all.
+Suite: 211/211.
+Live-verified in a real browser against the real accumulated log (237
+entries, not test fixtures): both stacked-bar charts rendered with
+correct real data (visually confirmed via screenshot - the severity
+chart showed real CRITICAL/WARNING/WATCH/NOMINAL counts split across
+Aug 1/Aug 2), and the recurring-objects table rendered as a real
+interactive dataframe (Show/hide columns, Download CSV, Search,
+Fullscreen controls all present) with no errors anywhere on the page.

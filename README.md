@@ -110,6 +110,9 @@ phase and why.
   answering from only the retrieved entries
 - `src/alerting.py` — real webhook alert (Slack/Discord/Teams-compatible)
   fired the moment a CRITICAL decision is logged; disabled by default
+- `src/trends.py` — severity mix per day, recurring real objects, and
+  Gemma-vs-fallback narration mix over time, aggregated from the real
+  accumulated log
 - `src/preflight.py` — config/connectivity/filesystem health checks
 - `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
 - `scripts/dashboard.py` — **the live browser dashboard** (see below)
@@ -219,11 +222,15 @@ real 3D orbit plot built by re-propagating live TLE data. A separate
 a triage result) for CelesTrak's real crewed-stations group — where those
 assets actually are right now, independent of any logged event. An "Ask
 about the mission log" box answers plain-English questions about the log
-itself with real retrieval-augmented search (see below). Sidebar buttons
-can generate real new activity (a live CelesTrak conjunction scan, a real
-decay/re-entry risk screen, the synthetic CRITICAL scenario, the
-synthetic attitude/pointing-loss scenario, or a historical replay)
-without leaving the browser. Opens at `http://localhost:8501` by default.
+itself with real retrieval-augmented search (see below). A "Trends"
+section aggregates the accumulated log itself — severity mix per day,
+recurring real objects across scans, Gemma-vs-fallback narration mix
+over time — the first view that looks at the log's history instead of
+one event or one instant. Sidebar buttons can generate real new activity
+(a live CelesTrak conjunction scan, a real decay/re-entry risk screen,
+the synthetic CRITICAL scenario, the synthetic attitude/pointing-loss
+scenario, or a historical replay) without leaving the browser. Opens at
+`http://localhost:8501` by default.
 
 ## Ask about the mission log
 

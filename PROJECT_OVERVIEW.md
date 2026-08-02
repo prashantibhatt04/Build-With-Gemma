@@ -265,6 +265,9 @@ mock, not a second copy of the pipeline's decision logic:
 - **Ask about the mission log** — real retrieval-augmented search over
   this exact audit log (local Ollama embeddings, real cosine-similarity
   ranking, Gemma answering from only the retrieved entries) - see below.
+- **Trends** — severity mix per real day, recurring real objects across
+  scans, and Gemma-vs-fallback rationale mix over time, aggregated from
+  the real accumulated log - see below.
 - Five sidebar actions generate real new activity without leaving the
   browser: fetching live CelesTrak conjunctions (the same cross-group
   screening described above), running the synthetic CRITICAL fixture,
@@ -353,6 +356,29 @@ hosted Gemini-style API has no embedding endpoint wired up here - a
 reachable local Ollama is required for this specific feature even on an
 otherwise cloud-configured deployment. Available both in the dashboard
 and as a standalone CLI (`python scripts/query_log.py "question"`).
+
+### Trends: what does the accumulated log actually say
+
+Every other dashboard view shows one event (the decision table, the
+inspect panel) or one instant (metrics, live tracking). `src/trends.py`
+is the first view that looks at the log's own history: a stacked-bar
+chart of findings by severity per real day (bucketed to match how the
+log files themselves are already split -
+`logs/decisions-YYYY-MM-DD.jsonl`, not an arbitrary window), a table of
+which real objects keep showing up across separate scans (ranked by
+appearance count, covering both conjunction pairs and single-object
+hazards), and a chart of how much narration each day genuinely came
+from Gemma versus the deterministic fallback - a day where fallback
+spikes is a real signal that Gemma was unreachable a lot that day, not
+just a cosmetic detail.
+
+Pure data transforms, no Streamlit dependency (same separation
+`dashboard_data.py` already established) and no new network/AI calls -
+purely aggregating what every other phase already logged. Live-verified
+against the real accumulated log (237 real entries across two real
+days at the time of writing): both charts and the recurring-objects
+table rendered correctly with real data, no mocked or synthetic
+numbers standing in.
 
 ## Historical replay: would this system have caught a real collision?
 
@@ -614,7 +640,11 @@ submission is done. Three small, mechanical changes:
   the already-generated real Gemma rationale, fails safe (never blocks
   or crashes the pipeline), and is disabled by default until a webhook
   URL is actually configured.
-- **Verified, not just built.** 203 automated tests, plus every major path
+- **The log looks back at itself, not just forward.** "Trends" is the
+  first view that aggregates the accumulated log's own history - severity
+  mix per day, which real objects recur across scans, Gemma-vs-fallback
+  narration mix over time - instead of showing one event or one instant.
+- **Verified, not just built.** 211 automated tests, plus every major path
   in this document has been run against real Ollama, a real hosted API
   key, and real live CelesTrak data during development — not just
   asserted to work. The dashboard specifically was verified in a real
@@ -630,10 +660,10 @@ Every phase originally scoped for this submission, plus the visual orbit
 plot, a second real hazard type (orbital decay), a live tracking view of
 real crewed stations, retrieval-augmented mission-log search, structured
 JSON output for the safety-critical veto verdict, a third hazard type
-(attitude/pointing loss, synthetic-only by necessity), and real-time
-webhook alerting for CRITICAL events added afterward, is now built.
-Further extensions remain open-ended, not tracked as committed next
-steps.
+(attitude/pointing loss, synthetic-only by necessity), real-time webhook
+alerting for CRITICAL events, and a trend/analytics view over the
+accumulated log added afterward, is now built. Further extensions remain
+open-ended, not tracked as committed next steps.
 
 See [`DEMO.md`](DEMO.md) for exact commands and a deeper per-stage
 breakdown, and [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) for the full build

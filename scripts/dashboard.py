@@ -32,6 +32,11 @@ src/orbital.py already uses - see src/orbit_plot_data.py.
 exact log - real local-Ollama embeddings, real cosine-similarity
 ranking, Gemma answering from ONLY the retrieved entries, never outside
 knowledge - see src/rag.py.
+
+"Trends" aggregates the real accumulated log itself (severity mix per
+day, recurring real objects, Gemma-vs-fallback rationale mix over time)
+- no other view in this dashboard shows more than one event or one
+instant at a time - see src/trends.py.
 """
 from __future__ import annotations
 
@@ -58,6 +63,7 @@ from src.orbit_plot_data import build_3d_trajectory_figure, build_distance_chart
 from src.pipeline import run_once
 from src.rag import answer_question
 from src.schemas import DecisionLogEntry
+from src.trends import build_rationale_source_trend_figure, build_severity_trend_figure, recurring_objects
 
 
 def _render_metrics(metrics: dict) -> None:
@@ -150,6 +156,29 @@ def _render_live_tracking() -> None:
                 return
         st.plotly_chart(build_live_globe_figure(positions), width="stretch")
         st.caption(f"{len(positions)} real objects, positions computed for right now.")
+
+
+def _render_trends(entries: list[DecisionLogEntry]) -> None:
+    st.subheader("Trends")
+    st.caption(
+        "Every other view above shows one event or the current instant. This "
+        "aggregates the real accumulated log itself: severity mix per real day, "
+        "which real objects keep showing up across separate scans, and how much "
+        "narration is genuinely coming from Gemma vs. the deterministic fallback."
+    )
+    if not entries:
+        st.caption("No logged decisions yet.")
+        return
+
+    st.plotly_chart(build_severity_trend_figure(entries), width="stretch")
+    st.plotly_chart(build_rationale_source_trend_figure(entries), width="stretch")
+
+    st.markdown("**Recurring objects** (most logged appearances first)")
+    recurring = recurring_objects(entries, top_n=10)
+    if recurring:
+        st.dataframe(recurring, width="stretch", hide_index=True)
+    else:
+        st.caption("No entries carry a real object identity yet.")
 
 
 def _render_mission_log_search(entries: list[DecisionLogEntry]) -> None:
@@ -302,6 +331,9 @@ def main() -> None:
         st.dataframe(entries_to_rows(entries), width="stretch", hide_index=True)
     else:
         st.caption("No logged decisions yet - use the sidebar to generate some.")
+    st.divider()
+
+    _render_trends(entries)
     st.divider()
 
     _render_mission_log_search(entries)

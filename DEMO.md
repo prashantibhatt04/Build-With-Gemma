@@ -98,9 +98,11 @@ Opens at `http://localhost:8501`: a "Show live positions" button renders
 a real *current-position* view (not a triage result) for CelesTrak's real
 crewed-stations group - ISS, Tiangong, and their currently-docked
 visiting vehicles - on a 3D globe, independent of any logged event (see
-Stage 2d below), and an "Ask about the mission log" box for real
-retrieval-augmented Q&A over the log itself (see Stage 2e below). Below
-that: a metrics row, the full decision table,
+Stage 2d below), an "Ask about the mission log" box for real
+retrieval-augmented Q&A over the log itself (see Stage 2e below), and a
+"Trends" section aggregating the accumulated log itself - severity mix
+per day, recurring real objects, Gemma-vs-fallback narration mix over
+time (see Stage 2g below). Below that: a metrics row, the full decision table,
 a pending-human-approval inbox with real Approve/Reject buttons, sidebar
 actions to fetch live CelesTrak conjunction data, screen a real CelesTrak
 debris group for decay/re-entry risk, run the synthetic CRITICAL
@@ -390,6 +392,37 @@ from `pointing_error_deg` (< 5° NOMINAL, 5-15° WATCH, 15-45° WARNING,
 carried as real supporting signal in the description/rationale - and the
 CRITICAL reading still getting a real deterministic action and real
 Gemma narration, with no `maneuver_plan`.
+
+---
+
+## Stage 2g — Trends: what does the accumulated log actually say
+
+```bash
+python3 -c "
+from src.logging_utils import DecisionLogger
+from src.trends import rationale_source_counts_by_day, recurring_objects, severity_counts_by_day
+
+entries = DecisionLogger().load_all_entries()
+print('Severity by day:', dict(sorted(severity_counts_by_day(entries).items())))
+print('Rationale source by day:', dict(sorted(rationale_source_counts_by_day(entries).items())))
+print('Top recurring real objects:')
+for row in recurring_objects(entries, top_n=5):
+    print(f\"  {row['object_name']} ({row['object_id']}): {row['count']} appearances\")
+"
+```
+
+**What it proves:** every other view in this project shows one event or
+one instant - this is the first that looks at the accumulated log's own
+history. `src/trends.py` (pure data transforms, no Streamlit, no new
+network/AI calls) buckets real logged entries by real calendar day
+(matching how `logs/decisions-YYYY-MM-DD.jsonl` files are already
+split) to show severity mix over time and how much narration came from
+Gemma versus the deterministic fallback each day, plus ranks real
+objects by how many separate logged events they appeared in - covering
+both conjunction pairs (each side counted separately) and single-object
+hazards (decay, attitude). The dashboard's "Trends" section renders the
+same data as two Plotly charts plus a table - run the command above
+first to see the raw numbers behind them.
 
 ---
 
@@ -734,7 +767,7 @@ which is also correct behavior, just less interesting to watch.)
 python -m pytest -v
 ```
 
-**What it proves:** 203 tests, all green - orbital math (including the
+**What it proves:** 211 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay
@@ -748,7 +781,9 @@ TLE fixtures), the mission-log search's embedding cache/invalidation,
 cosine-similarity ranking, and context-grounded prompt construction
 (mocked Ollama calls), CRITICAL-event webhook alerting's text formatting
 across all three hazard shapes, severity/URL gating, and fail-safe
-network-error handling (mocked), maneuver math (including the QA pass's
+network-error handling (mocked), the Trends view's day-bucketing and
+recurring-objects ranking across all three hazard shapes, maneuver math
+(including the QA pass's
 plausibility bound), budget tracking, Gemma client retry/fallback
 (mocked), Gemma's autonomous maneuver veto-check - both the structured-
 JSON path and the free-text fallback path (mocked) - the historical

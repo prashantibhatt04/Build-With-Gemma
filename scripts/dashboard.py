@@ -398,7 +398,15 @@ def main() -> None:
             try:
                 with st.spinner("Replaying the real 2009 collision record..."):
                     run_id = uuid.uuid4().hex[:8]
-                    adapter = HistoricalReplayAdapter(run_id=run_id)
+                    # A real independent cross-check (re-propagating real
+                    # historical TLEs, not just replaying the documented
+                    # number) when Space-Track credentials are configured
+                    # - optional, and never blocks the replay itself if
+                    # it fails (see HistoricalReplayAdapter's docstring).
+                    st_client = None
+                    if settings.spacetrack_username and settings.spacetrack_password:
+                        st_client = SpaceTrackClient(settings.spacetrack_username, settings.spacetrack_password)
+                    adapter = HistoricalReplayAdapter(run_id=run_id, spacetrack_client=st_client)
                     run_once(adapter=adapter, client=client, logger=logger, limit=1)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't replay the historical event: {exc}")

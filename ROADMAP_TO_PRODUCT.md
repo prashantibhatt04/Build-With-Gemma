@@ -589,3 +589,58 @@ Also confirmed live: an unauthenticated `POST .../review` against the
 real containerized API correctly returned 503, not a silent no-op.
 Torn down and its volumes removed afterward, same discipline as every
 other Docker verification in this project.
+
+## Post-Phase-6 improvement — real historical re-propagation, and an honest finding about TLE staleness
+
+Phase 1's `fetch_historical_tle_text` (real `gp_history` queries) was
+built and live-verified but deliberately not wired into anything - "an
+independent follow-up," per its own docstring at the time. With a real
+account in hand, that follow-up: `real_repropagate_event`
+(`src/ingestion/historical_adapter.py`) fetches REAL historical element
+sets for both objects in the 2009 Iridium 33/Cosmos 2251 collision and
+re-runs this project's own real two-pass propagation search
+(`orbital.find_closest_approach` - the exact same physics every live
+screening call already uses) to independently derive a closest approach,
+rather than only replaying the documented 584m SOCRATES number.
+`HistoricalReplayAdapter` gained an optional `spacetrack_client` param -
+when provided, each event gets this real cross-check attached to
+`raw_data` under `real_repropagated_*` keys; a failure is caught and
+recorded, never raised, since an optional enhancement must never block
+the documented replay it's checking. Severity classification still runs
+on the documented numbers, unchanged - this is a genuinely additive
+cross-check, not a replacement. Wired into the dashboard's existing
+"Replay historical event" button (auto-enabled when Space-Track
+credentials are configured) and surfaced in `display.py`. 11 new tests
+(`test_historical_adapter.py`). Full suite: 318/318.
+
+**The real finding, run live against the actual account:** the
+re-propagated closest approach came out to **181km** - not anywhere
+close to the documented 584m - with the predicted time of closest
+approach drifting **5 hours** later than what was actually reported in
+2009. This is a real, explicable result, not a bug: `gp_history` only
+returns whatever element set happened to be published, and for this
+query that meant a Cosmos 2251 TLE **over a full day (29 hours) stale**
+relative to the actual collision time (Iridium 33's was fresher, ~22
+hours). SGP4 propagation error compounds significantly over a
+day-plus window - a few seconds of accumulated along-track timing error,
+at the ~11.7 km/s relative velocity involved, is enough to turn a
+sub-kilometer real geometry into a multi-hundred-kilometer predicted
+one. The real 584m SOCRATES prediction was possible specifically because
+this conjunction was flagged as concerning enough that week to be
+tracked with much fresher, more frequently updated data (14 SOCRATES
+reports in the week leading up to it) - a real advantage a generic
+historical query into whatever Space-Track happened to have on file
+can't reproduce after the fact.
+
+This is worth stating plainly rather than downplaying: **a two-pass
+SGP4 search from a day-old TLE cannot reproduce an official sub-kilometer
+conjunction prediction, and shouldn't be expected to.** It's the same
+underlying limitation this project's own maneuver math and decay
+assessment already document as "simplified, not flight-software-grade"
+- and it's a genuine, concrete illustration of exactly why real
+operational conjunction assessment needs frequently refreshed tracking
+data (ideally same-day) and full covariance (Phase 2), not point-position
+propagation from whatever archival element set happens to be available.
+The real cross-check is still valuable specifically *because* it
+surfaces this honestly instead of quietly repeating the documented
+number and implying more independent confirmation than actually exists.

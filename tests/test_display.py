@@ -86,6 +86,31 @@ def test_render_entry_omits_pc_when_severity_source_is_distance_threshold():
     assert "Pc=" not in output
 
 
+def test_render_entry_shows_real_repropagation_cross_check_when_present():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.CRITICAL, min_distance_km=0.584)
+    entry.telemetry.raw_data["real_repropagated_min_distance_km"] = 181.123
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "Real re-propagation cross-check" in output
+    assert "181.123km" in output
+    assert "documented: 0.584km" in output
+
+
+def test_render_entry_shows_repropagation_error_when_cross_check_failed():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.WATCH)
+    entry.telemetry.raw_data["real_repropagation_error"] = "real network failure"
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "Real re-propagation cross-check failed" in output
+    assert "real network failure" in output
+
+
 def test_render_entry_shows_severity_badge_and_rationale():
     console = Console(record=True, width=120)
     entry = _conjunction_entry(Severity.WATCH)

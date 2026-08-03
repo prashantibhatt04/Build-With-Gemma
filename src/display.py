@@ -94,6 +94,19 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     console.print(badge, subject, "—", entry.decision.rationale)
 
+    if "real_repropagated_min_distance_km" in raw:
+        # A real, independent physics cross-check (src/ingestion/
+        # historical_adapter.py's real_repropagate_event) - genuinely
+        # re-derived from real historical TLEs, not the documented number
+        # this event was actually classified on above.
+        console.print(
+            f"    [dim]Real re-propagation cross-check: "
+            f"{raw['real_repropagated_min_distance_km']:.3f}km "
+            f"(documented: {raw['min_distance_km']:.3f}km)[/dim]"
+        )
+    elif "real_repropagation_error" in raw:
+        console.print(f"    [dim]Real re-propagation cross-check failed: {raw['real_repropagation_error']}[/dim]")
+
     plan = entry.decision.maneuver_plan
     if plan is None:
         return

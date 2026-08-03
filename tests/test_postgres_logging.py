@@ -13,7 +13,7 @@ localhost's default isn't right for a given machine.
 """
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -48,6 +48,56 @@ def store():
     with psycopg.connect(TEST_DATABASE_URL) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
+
+
+def test_count_older_than_matches_what_delete_would_remove(store):
+    store.append(_make_entry("pg-count-1"))
+    store.append(_make_entry("pg-count-2"))
+
+    future_cutoff = datetime.now(timezone.utc) + timedelta(hours=1)
+    count = store.count_older_than(future_cutoff)
+
+    assert count == 2
+    assert store.load_all() != []  # count_older_than must not delete anything
+
+
+def test_delete_older_than_removes_rows_when_cutoff_is_in_the_future(store):
+    store.append(_make_entry("pg-old-1"))
+    store.append(_make_entry("pg-old-2"))
+
+    deleted = store.delete_older_than(datetime.now(timezone.utc) + timedelta(hours=1))
+
+    assert deleted == 2
+    assert store.load_all() == []
+
+
+def test_delete_older_than_keeps_rows_when_cutoff_is_in_the_past(store):
+    store.append(_make_entry("pg-recent-1"))
+
+    deleted = store.delete_older_than(datetime.now(timezone.utc) - timedelta(hours=1))
+
+    assert deleted == 0
+    assert store.find("pg-recent-1") is not None
+
+
+def test_delete_older_than_only_removes_rows_actually_before_the_cutoff(store):
+    """Real, precise DB-side filtering - a genuinely old row and a
+    genuinely recent one in the same table must be treated differently,
+    not an all-or-nothing table-wide decision."""
+    store.append(_make_entry("pg-real-old"))
+    with psycopg.connect(TEST_DATABASE_URL) as conn:
+        conn.execute(
+            f"UPDATE {store.table_name} SET created_at = %s WHERE event_id = %s",
+            (datetime.now(timezone.utc) - timedelta(days=400), "pg-real-old"),
+        )
+        conn.commit()
+    store.append(_make_entry("pg-real-recent"))
+
+    deleted = store.delete_older_than(datetime.now(timezone.utc) - timedelta(days=365))
+
+    assert deleted == 1
+    assert store.find("pg-real-old") is None
+    assert store.find("pg-real-recent") is not None
 
 
 def _make_entry(event_id: str) -> DecisionLogEntry:

@@ -67,6 +67,11 @@ class Settings:
     # this phase - configuring this is what actually closes the "anyone
     # can claim to be anyone" gap for approve/reject/mark-reviewed.
     operator_tokens: dict[str, str] = field(default_factory=dict)
+    # Real rate limit for scripts/api.py (see src/rate_limit.py) - requests
+    # per minute per client, always on by default (unlike most settings in
+    # this project, a baseline protection shouldn't require opting in). 0
+    # disables it entirely, e.g. for local dev convenience.
+    api_rate_limit_per_minute: int = 120
 
 
 def load_settings() -> Settings:
@@ -89,6 +94,7 @@ def load_settings() -> Settings:
         spacetrack_password=os.getenv("SPACETRACK_PASSWORD", ""),
         database_url=os.getenv("DATABASE_URL", ""),
         operator_tokens=parse_operator_tokens(os.getenv("OPERATOR_TOKENS", "")),
+        api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
     )
 
 

@@ -27,6 +27,13 @@ anything resembling free-text identity, since a programmatic caller has
 no "just don't worry about it for now" equivalent to a human glancing at
 a warning banner.
 
+Real rate limiting (src/rate_limit.py) is on by default - a token-bucket
+limiter per authenticated operator (or source IP, unauthenticated),
+configurable via API_RATE_LIMIT_PER_MINUTE, 0 disables it. Real
+Prometheus metrics are served at the conventional /metrics path
+(src/metrics.py) - the JSON severity/status summary that used to live
+there moved to /stats/summary to make room for it.
+
 Run:
     uvicorn scripts.api:app --reload           # dev
     uvicorn scripts.api:app --host 0.0.0.0     # production (see docker-compose.yml)
@@ -41,13 +48,17 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 from src.auth import authenticate
 from src.config import settings
 from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
 from src.logging_utils import DecisionLogger
+from src.metrics import DecisionLogCollector, http_requests_total, rate_limited_requests_total, registry, render_metrics
+from src.rate_limit import RateLimiter
 from src.schemas import DecisionLogEntry
 
 app = FastAPI(
@@ -55,6 +66,65 @@ app = FastAPI(
     description="Programmatic access to the real conjunction/decay/attitude audit log.",
     version="1.0.0",
 )
+
+# None when API_RATE_LIMIT_PER_MINUTE=0 - disabled entirely, e.g. for
+# local dev. A real, on-by-default value otherwise (see src/config.py) -
+# constructed once at import time, not per-request, so its token buckets
+# actually accumulate state across real requests.
+_rate_limiter = (
+    RateLimiter(capacity=settings.api_rate_limit_per_minute, refill_per_second=settings.api_rate_limit_per_minute / 60.0)
+    if settings.api_rate_limit_per_minute > 0
+    else None
+)
+
+
+def _rate_limit_client_id(request: Request) -> str:
+    """Prefers the authenticated operator identity over the raw source
+    IP when a valid token is presented - so a shared-IP deployment (e.g.
+    several operators behind one NAT/proxy) doesn't unfairly bucket
+    unrelated real operators together under one limit. Falls back to
+    source IP for unauthenticated requests, which is the only real
+    identity available for those."""
+    authorization = request.headers.get("authorization", "")
+    if authorization.startswith("Bearer ") and settings.operator_tokens:
+        operator = authenticate(authorization[len("Bearer ") :].strip(), settings.operator_tokens)
+        if operator is not None:
+            return f"operator:{operator}"
+    client_host = request.client.host if request.client else "unknown"
+    return f"ip:{client_host}"
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    if _rate_limiter is not None:
+        client_id = _rate_limit_client_id(request)
+        allowed, retry_after = _rate_limiter.allow(client_id)
+        if not allowed:
+            rate_limited_requests_total.inc()
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _count_requests(request: Request, call_next):
+    """A real, monotonically increasing process counter - see
+    src/metrics.py's module docstring for why this is a Counter and not
+    part of the audit-log-derived Collector below. Labeled by the matched
+    ROUTE TEMPLATE (e.g. "/decisions/{event_id}"), read from
+    request.scope AFTER routing has resolved it - never the raw resolved
+    path, which would bake a real event_id into the metric's label value
+    and produce unbounded real label cardinality in a real Prometheus
+    deployment (a new label value, forever retained, for every distinct
+    id anyone ever queried)."""
+    response = await call_next(request)
+    route = request.scope.get("route")
+    route_template = route.path if route is not None else request.url.path
+    http_requests_total.labels(method=request.method, route=route_template, status=str(response.status_code)).inc()
+    return response
 
 
 @app.middleware("http")
@@ -84,6 +154,27 @@ def get_logger() -> DecisionLogger:
     # call already opens its own real connection/file handle underneath
     # (see JSONLDecisionLogStore/PostgresDecisionLogStore).
     return DecisionLogger(settings=settings)
+
+
+def _load_entries_for_metrics() -> list[DecisionLogEntry]:
+    """Looks up `app.dependency_overrides` explicitly, at CALL time (once
+    per real scrape) - not just `get_logger()` directly. A prometheus_client
+    Collector is invoked by generate_latest(), completely outside FastAPI's
+    own request/Depends() machinery, so it would otherwise silently ignore
+    `app.dependency_overrides[get_logger] = ...` (exactly how tests point
+    every other endpoint at an isolated logger) and always read whichever
+    real, ambient .env-configured log get_logger() itself constructs -
+    a real bug caught by this project's own "test against the real
+    override mechanism, not an assumption about it" discipline."""
+    logger_factory = app.dependency_overrides.get(get_logger, get_logger)
+    return logger_factory().load_all_entries()
+
+
+# Registered once at import time, not per-request - a real Prometheus
+# Collector recomputes its gauges fresh every time /metrics is actually
+# scraped (see DecisionLogCollector.collect), so there's no request-time
+# cost to registering it eagerly here.
+registry.register(DecisionLogCollector(load_entries=_load_entries_for_metrics))
 
 
 def _parse_bearer_token(authorization: Optional[str]) -> str:
@@ -196,11 +287,27 @@ def get_decision(
     return entry
 
 
-@app.get("/metrics", response_model=MetricsResponse)
-def get_metrics(
+@app.get("/stats/summary", response_model=MetricsResponse)
+def get_stats_summary(
     operator: Optional[str] = Depends(optional_operator), logger: DecisionLogger = Depends(get_logger),
 ):
+    """The JSON severity/status summary - same real numbers the dashboard's
+    metrics row shows. Was originally served at /metrics; moved here once
+    /metrics became real Prometheus exposition text (the conventional path
+    scrapers expect), so the two don't collide."""
     return compute_metrics(logger.load_all_entries())
+
+
+@app.get("/metrics")
+def get_prometheus_metrics():
+    """Real Prometheus exposition-format text - see src/metrics.py.
+    Deliberately NOT gated by optional_operator: a Prometheus scraper is
+    real infrastructure, not a human operator, and gating it the same way
+    as /decisions would mean either baking a token into scrape config
+    (itself a real secret-handling concern) or leaving metrics
+    unreachable by default - same "a health/monitoring probe shouldn't
+    need a credential" reasoning /health already uses."""
+    return Response(content=render_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/decisions/{event_id}/approve", response_model=DecisionLogEntry)

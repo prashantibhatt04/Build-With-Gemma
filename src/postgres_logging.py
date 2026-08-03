@@ -1,4 +1,5 @@
-"""Real Postgres-backed DecisionLogStore - ROADMAP_TO_PRODUCT.md Phase 4.
+"""Real Postgres-backed DecisionLogStore - ROADMAP_TO_PRODUCT.md Phase 4,
+with retention support added as a post-Phase-6 improvement.
 
 Why this exists: the original JSONL-file store (src/logging_utils.py)
 scans and rewrites whole files for find()/update() - fine for a demo's
@@ -18,6 +19,7 @@ JSONLDecisionLogStore's own load_all() ordering exactly.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 import psycopg
@@ -99,3 +101,39 @@ class PostgresDecisionLogStore(DecisionLogStore):
                 f"SELECT entry_json FROM {self.table_name} ORDER BY id ASC",
             ).fetchall()
         return [DecisionLogEntry.model_validate(row[0]) for row in rows]
+
+    def count_older_than(self, cutoff: datetime) -> int:
+        """Real, read-only count of rows delete_older_than(cutoff) would
+        remove - used by scripts/retention_cleanup.py's --dry-run, so a
+        dry run reports a real number instead of just "would delete
+        something." Same created_at semantics as delete_older_than."""
+        with psycopg.connect(self.database_url) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {self.table_name} WHERE created_at < %s",
+                (cutoff,),
+            ).fetchone()
+        return row[0]
+
+    def delete_older_than(self, cutoff: datetime) -> int:
+        """Real, DB-side retention deletion - see scripts/retention_cleanup.py.
+        Uses `created_at` (when the row was actually inserted, set by
+        Postgres itself at INSERT time - see the table schema above), not
+        any timestamp inside entry_json, so retention behavior is
+        unaffected by whatever real-world event time a decision's own
+        payload happens to carry (a historical replay's real 2009
+        timestamp, for instance, must not make that row look 16+ years
+        old for retention purposes - it was inserted recently, same as
+        any other real entry).
+
+        Returns the real number of rows actually deleted, so a caller
+        (scripts/retention_cleanup.py) can report what happened rather
+        than assuming success silently.
+        """
+        with psycopg.connect(self.database_url) as conn:
+            cursor = conn.execute(
+                f"DELETE FROM {self.table_name} WHERE created_at < %s",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+        return deleted

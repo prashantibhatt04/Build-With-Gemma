@@ -127,7 +127,10 @@ phase and why.
 - `src/pc_severity.py` — real probability-of-collision severity
   classification from a Space-Track CDM, when one is available (Phase 2)
 - `src/postgres_logging.py` — a real Postgres-backed alternative to the
-  JSONL audit log, for continuous/concurrent operation (Phase 4)
+  JSONL audit log, for continuous/concurrent operation (Phase 4), plus
+  real retention deletion (`delete_older_than`/`count_older_than`)
+- `src/rate_limit.py` — a real token-bucket rate limiter for the REST API
+- `src/metrics.py` — real Prometheus-format metrics for the REST API
 - `src/ingestion/spacetrack_client.py` / `spacetrack_adapter.py` /
   `cdm_enrichment.py` — an alternative, credentialed data source to
   CelesTrak (Phase 1)
@@ -137,6 +140,8 @@ phase and why.
   programmatic integration (Phase 6, see below)
 - `scripts/scheduler.py` — continuous background screening loop for
   unattended/production operation (see below)
+- `scripts/retention_cleanup.py`, `scripts/backup_postgres.sh` — real
+  retention/backup tooling for the Postgres backend (see below)
 - `scripts/query_log.py` — standalone CLI for "ask about the mission log"
   (see `src/rag.py`) outside the browser
 - `scripts/check_gemma.py`, `scripts/mark_reviewed.py`,
@@ -265,7 +270,7 @@ uvicorn scripts.api:app --reload
 The dashboard is for a human; this is for an operator's own
 mission-control software. A real FastAPI service over the exact same
 audit log (`GET /decisions`, `/decisions/{event_id}`,
-`/decisions/pending-approval`, `/metrics`; `POST
+`/decisions/pending-approval`, `/stats/summary`; `POST
 /decisions/{event_id}/approve|reject|review`) — see
 [`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) Phase 6. Interactive
 docs at `http://localhost:8000/docs` once running. Reads stay open if
@@ -275,6 +280,19 @@ require a real token — `Authorization: Bearer <token>` — and refuse to
 run at all (503) if none are configured, stricter than the dashboard's
 free-text fallback since a programmatic caller has no human-readable-name
 equivalent.
+
+**Rate limited by default** — a real token-bucket limiter
+(`src/rate_limit.py`), per authenticated operator or source IP,
+`API_RATE_LIMIT_PER_MINUTE` (default 120/min, `0` disables it). Exceeding
+it returns `429` with a real `Retry-After` header.
+
+**Real Prometheus metrics at `GET /metrics`** (`src/metrics.py`) — the
+conventional scrape path, no authentication required (a scraper is
+infrastructure, not a human operator). Decision counts by severity and
+maneuver status are computed fresh from the real audit log every scrape;
+real HTTP request/rate-limit counters track the API process itself,
+labeled by route *template* (`/decisions/{event_id}`, not the resolved
+path) so real per-object ids never blow up label cardinality.
 
 ## Run the scheduler (continuous / unattended operation)
 
@@ -312,6 +330,25 @@ come from `.env` via `env_file`, never baked into the image. Set
 localhost — see `src/auth.py`; without it, the dashboard's "Operator
 name" field is free text anyone with the page open can set to anything,
 and the API's write endpoints refuse to run at all.
+
+## Retention and backup (Postgres backend only)
+
+```bash
+python scripts/retention_cleanup.py --days 365          # delete audit rows older than 365 days
+python scripts/retention_cleanup.py --days 365 --dry-run  # report what WOULD be deleted, no changes
+./scripts/backup_postgres.sh                             # real pg_dump to ./backups/
+```
+
+Only applies when `DATABASE_URL` is set — the JSONL backend's own
+retention/backup story is already simple (one file per real day under
+`logs/`; delete old ones or copy the directory directly). Retention
+requires an explicit `--days`/`RETENTION_DAYS` — there's no default
+window, so a misconfigured cron job can't silently delete real audit
+history. Restore a backup with `pg_restore --dbname="$DATABASE_URL"
+--clean --if-exists backups/decisions-<timestamp>.dump`. Neither script
+is wired into a scheduler automatically — run them from host cron, a
+Kubernetes CronJob, or similar, matching how any other periodic
+maintenance job would be operated in a real deployment.
 
 ## Ask about the mission log
 

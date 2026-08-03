@@ -644,3 +644,91 @@ propagation from whatever archival element set happens to be available.
 The real cross-check is still valuable specifically *because* it
 surfaces this honestly instead of quietly repeating the documented
 number and implying more independent confirmation than actually exists.
+
+## Post-Phase-6 improvement — rate limiting, Prometheus metrics, Postgres retention & backup
+
+Three real, independent hardening items, all applying to infrastructure
+already live-verified in earlier phases rather than new surface area:
+
+**Rate limiting** (`src/rate_limit.py`): a real in-process token-bucket
+`RateLimiter`, one bucket per client (authenticated operator name, or
+source IP when unauthenticated), with an injectable clock for
+deterministic tests rather than sleeping real wall-clock time. Wired
+into `scripts/api.py` as request middleware ahead of routing, returning
+a real `429` with a `Retry-After` header computed from actual remaining
+refill time - not a fixed guess. On by default (`API_RATE_LIMIT_PER_MINUTE`,
+120/min) since a baseline abuse guard shouldn't need opt-in the way
+optional features in this project do; `0` disables it. Live-verified
+standalone: ran `uvicorn scripts.api:app` with
+`API_RATE_LIMIT_PER_MINUTE=3` and confirmed the 4th request within a
+minute really returned `429` with a real `Retry-After` value, while the
+first 3 succeeded.
+
+**Prometheus metrics** (`src/metrics.py`): a real `prometheus_client`
+`CollectorRegistry` (a dedicated one, not the process-global default, so
+tests don't leak state into each other), exposed at `GET /metrics` with
+no auth (matching how Prometheus itself expects to scrape - a metrics
+endpoint that needs a bearer token per-scrape target is unusual and
+adds real operational friction for no benefit here). Two real
+monotonic `Counter`s (`http_requests_total`, `rate_limited_requests_total`)
+track process-level facts the audit log doesn't capture. A custom
+`DecisionLogCollector` recomputes decision-derived gauges
+(`mission_ops_decisions_total`, by-severity breakdown, Gemma-rationale
+ratio, maneuver status) fresh on every real scrape rather than caching -
+correctness over marginal scrape cost, consistent with this project's
+"deterministic, not fabricated" ethos. Request counting labels by the
+matched FastAPI **route template** (`request.scope["route"]`), not the
+resolved path - deliberately, since labeling by real event IDs would
+give Prometheus unbounded label cardinality in production. A real bug
+was caught here by the tests, not shipped: the collector's first
+version called `get_logger()` directly at scrape time, bypassing
+FastAPI's `app.dependency_overrides` - the exact mechanism every test
+uses to point the API at an isolated log - so a test asserting an
+isolated 1-entry log instead saw the real, ambient 251-entry
+`.env`-configured log leak in. Fixed by having the collector consult
+`app.dependency_overrides.get(get_logger, get_logger)` at call time.
+Live-verified standalone with `curl http://localhost:8124/metrics`
+against a real running server before wiring into Docker; renamed the
+old `/metrics` JSON summary endpoint to `/stats/summary` to free up the
+real Prometheus exposition-format path.
+
+**Postgres retention & backup** (`scripts/retention_cleanup.py`,
+`scripts/backup_postgres.sh`): retention deletes by `created_at` (the
+real insert timestamp Postgres itself assigns), not any timestamp
+inside an entry's own payload - a historical replay's real 2009
+collision timestamp must not make a row logged today look 16 years old.
+Deliberately refuses to run without an explicit, positive `--days` or
+`RETENTION_DAYS` - no default retention window, since a cron job
+silently deleting real audit history because someone forgot to set a
+value is a genuinely dangerous default to have. `--dry-run` reports a
+real count via a new `PostgresDecisionLogStore.count_older_than()`
+without deleting anything. Backup is a real `pg_dump --format=custom`
+wrapper (not a placeholder), with a documented restore command via
+`pg_restore --clean --if-exists`. Only applies to the Postgres backend;
+both scripts no-op cleanly (exit 0) when `DATABASE_URL` isn't
+configured, since the JSONL backend's retention/backup story is already
+just "manage the date-stamped files directly."
+
+**The real finding, from live-verifying the backup script:** `pg_dump`
+failed on first run with "aborting because of server version mismatch"
+- this machine's default `pg_dump` on `PATH` (Homebrew's postgresql@16,
+16.14) was older than the actual running Postgres server (postgresql@17,
+17.10), a genuine multi-version-install situation rather than a script
+defect. Resolved for verification by pointing at the matching
+`postgresql@17` binary directly; documented in the script's own header
+comment so the next person hitting this doesn't mistake it for a bug.
+Retention was live-verified with a real `--dry-run` against the actual
+local Postgres audit table (40 real rows accumulated across this
+session's testing), then a real (non-dry-run) delete confirmed against
+a short cutoff, and the resulting row count reduction was directly
+observed via `psql`.
+
+18 new tests across `test_rate_limit.py` (7, real elapsed-time refill
+behavior, not just capacity math), `test_metrics.py` (7, including the
+dependency-override bug above and a route-template-not-raw-path
+cardinality-safety check), and `test_postgres_logging.py` (4 new,
+`count_older_than`/`delete_older_than` run against a real local
+Postgres table, not mocked), plus API-level rate-limit/metrics tests
+folded into `test_api.py`. Full suite: **344/344**, including all 11
+Postgres-backed tests in `test_postgres_logging.py` running against a
+real reachable local Postgres instance (not skipped).

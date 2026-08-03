@@ -11,10 +11,12 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+import scripts.api as api_module
 from scripts.api import app, get_logger, settings as api_settings
 from src.config import Settings
 from src.logging_utils import DecisionLogger
 from src.maneuver import compute_avoidance_maneuver
+from src.rate_limit import RateLimiter
 from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent
 
 
@@ -162,17 +164,58 @@ def test_pending_approval_endpoint_only_returns_awaiting_entries(client):
     assert [e["telemetry"]["event_id"] for e in response.json()] == ["e2"]
 
 
-def test_metrics_endpoint_reflects_real_logged_entries(client):
+def test_stats_summary_endpoint_reflects_real_logged_entries(client):
     test_client, logger = client
     logger.log(_make_entry("e1", Severity.CRITICAL))
     logger.log(_make_entry("e2", Severity.NOMINAL))
 
-    response = test_client.get("/metrics")
+    response = test_client.get("/stats/summary")
 
     assert response.status_code == 200
     body = response.json()
     assert body["total"] == 2
-    assert body["critical"] == 1
+
+
+def test_metrics_endpoint_serves_real_prometheus_exposition_text(client):
+    test_client, logger = client
+    logger.log(_make_entry("e1", Severity.CRITICAL))
+
+    response = test_client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    body = response.text
+    assert 'mission_ops_decisions_total 1.0' in body
+    assert 'mission_ops_decisions_by_severity{severity="critical"} 1.0' in body
+
+
+def test_metrics_endpoint_requires_no_authentication(client):
+    """A Prometheus scraper is infrastructure, not a human operator -
+    same "no credential for a health/monitoring probe" reasoning /health
+    already uses."""
+    test_client, _logger = client
+    with _operator_tokens({"alice": "secret123"}):
+        response = test_client.get("/metrics")  # deliberately no Authorization header
+
+    assert response.status_code == 200
+
+
+def test_metrics_endpoint_labels_by_route_template_not_raw_resolved_path(client):
+    """Real cardinality-safety check: hitting /decisions/{event_id} for
+    two different real event_ids must produce ONE route label
+    ("/decisions/{event_id}"), not two, or a real Prometheus deployment
+    would accumulate one label series per distinct id ever queried."""
+    test_client, logger = client
+    logger.log(_make_entry("e1"))
+    logger.log(_make_entry("e2"))
+
+    test_client.get("/decisions/e1")
+    test_client.get("/decisions/e2")
+
+    body = test_client.get("/metrics").text
+    assert 'route="/decisions/{event_id}"' in body
+    assert 'route="/decisions/e1"' not in body
+    assert 'route="/decisions/e2"' not in body
 
 
 def test_write_endpoints_return_503_when_operator_tokens_unconfigured(client):
@@ -261,3 +304,56 @@ def test_review_accepts_an_explicit_reviewed_by_override(client):
         )
 
     assert response.json()["reviewed_by"] == "carol"
+
+
+@contextmanager
+def _rate_limiter(limiter):
+    """Swaps the module-level rate limiter singleton for the duration of
+    a test - it's constructed once at import time (so its real token
+    buckets accumulate state across real requests, not reset per-request),
+    which means tests need to override the same shared instance rather
+    than pass one in per-call."""
+    original = api_module._rate_limiter
+    api_module._rate_limiter = limiter
+    try:
+        yield
+    finally:
+        api_module._rate_limiter = original
+
+
+def test_rate_limit_returns_429_with_retry_after_once_exhausted(client):
+    test_client, _logger = client
+    with _rate_limiter(RateLimiter(capacity=2, refill_per_second=0.001)):
+        first = test_client.get("/health")
+        second = test_client.get("/health")
+        third = test_client.get("/health")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert "Retry-After" in third.headers
+    assert int(third.headers["Retry-After"]) >= 1
+
+
+def test_rate_limit_disabled_when_limiter_is_none(client):
+    test_client, _logger = client
+    with _rate_limiter(None):
+        responses = [test_client.get("/health") for _ in range(10)]
+
+    assert all(r.status_code == 200 for r in responses)
+
+
+def test_rate_limit_buckets_by_authenticated_operator_not_shared_source(client):
+    """Two different real operators hitting the API from what TestClient
+    reports as the same source (its fixed test host) must not share one
+    budget - each valid token gets its own bucket."""
+    test_client, _logger = client
+    with _operator_tokens({"alice": "tok-a", "bob": "tok-b"}):
+        with _rate_limiter(RateLimiter(capacity=1, refill_per_second=0.001)):
+            alice_first = test_client.get("/decisions", headers={"Authorization": "Bearer tok-a"})
+            alice_second = test_client.get("/decisions", headers={"Authorization": "Bearer tok-a"})
+            bob_first = test_client.get("/decisions", headers={"Authorization": "Bearer tok-b"})
+
+    assert alice_first.status_code == 200
+    assert alice_second.status_code == 429
+    assert bob_first.status_code == 200  # bob's own, independent bucket

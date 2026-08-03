@@ -100,6 +100,33 @@ def test_verify_maneuver_reports_cleared_with_new_distance():
     assert (datetime.now(timezone.utc) - verified.verified_at).total_seconds() < 5
 
 
+def test_verify_maneuver_respects_a_custom_critical_threshold_km():
+    """Real behavior this guards: pipeline.decide_node and
+    logging_utils.approve_maneuver both pass the operator-configured
+    Settings.conjunction_critical_km explicitly (see verify_maneuver's
+    docstring) instead of relying on this module's own
+    CRITICAL_THRESHOLD_KM constant. The same plan/recompute must clear
+    under the (low) module default but fail to clear under a stricter
+    custom threshold that sits above the recomputed distance - proving
+    the passed-in argument is what actually drives `cleared`, not the
+    module constant."""
+    original_min_distance_km = 2.0
+    plan = compute_avoidance_maneuver(
+        object_a="a", object_b="b",
+        min_distance_km=original_min_distance_km, relative_velocity_km_s=3.0,
+    )
+
+    verified_default = verify_maneuver(original_min_distance_km, plan)
+    assert verified_default.cleared is True
+
+    # Same plan, same recomputed new_min_distance_km (~33km) - but a
+    # custom critical_threshold_km set ABOVE that recomputed distance
+    # must flip cleared to False.
+    verified_strict = verify_maneuver(original_min_distance_km, plan, critical_threshold_km=40.0)
+    assert verified_strict.new_min_distance_km == verified_default.new_min_distance_km
+    assert verified_strict.cleared is False
+
+
 def test_verify_maneuver_flags_implausibly_large_delta_v_as_not_cleared():
     """The distance recompute alone can never independently catch a bad
     maneuver (see docstring/comment above) - this proves the ADDED

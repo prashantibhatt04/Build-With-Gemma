@@ -72,6 +72,29 @@ class Settings:
     # this project, a baseline protection shouldn't require opting in). 0
     # disables it entirely, e.g. for local dev convenience.
     api_rate_limit_per_minute: int = 120
+    # Real, deterministic hazard-severity thresholds - not Gemma-derived,
+    # see src/pipeline.py's classify_*_severity functions for exactly how
+    # each is used. Defaults match this project's original hardcoded
+    # values exactly (zero behavior change for anyone who doesn't set
+    # these) - configurable per deployment because different real
+    # operators have different risk tolerance and different assets: a
+    # maneuverable, high-value satellite reasonably wants a bigger
+    # CRITICAL buffer than a defunct cubesat, and there's no one correct
+    # answer this project should hardcode for every real customer.
+    # conjunction_critical_km is also the one src/maneuver.py's
+    # compute_avoidance_maneuver/verify_maneuver read (via decide_node
+    # passing it through explicitly) - a single source of truth, not a
+    # second hardcoded constant that could silently drift out of sync
+    # with what actually got classified CRITICAL in the first place.
+    conjunction_critical_km: float = 5.0
+    conjunction_warning_km: float = 25.0
+    conjunction_watch_km: float = 100.0
+    decay_critical_perigee_km: float = 200.0
+    decay_warning_perigee_km: float = 300.0
+    decay_watch_perigee_km: float = 500.0
+    attitude_critical_deg: float = 45.0
+    attitude_warning_deg: float = 15.0
+    attitude_watch_deg: float = 5.0
     # A real operator's own asset(s), by NORAD catalog ID - "25544,48274".
     # Empty (the default) keeps every existing demo/screening button
     # pointed at CelesTrak's own curated "stations" group, exactly as
@@ -111,6 +134,15 @@ def load_settings() -> Settings:
         operator_tokens=parse_operator_tokens(os.getenv("OPERATOR_TOKENS", "")),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
         watched_norad_ids=_parse_watched_norad_ids(os.getenv("WATCHED_NORAD_IDS", "")),
+        conjunction_critical_km=float(os.getenv("CONJUNCTION_CRITICAL_KM", "5.0")),
+        conjunction_warning_km=float(os.getenv("CONJUNCTION_WARNING_KM", "25.0")),
+        conjunction_watch_km=float(os.getenv("CONJUNCTION_WATCH_KM", "100.0")),
+        decay_critical_perigee_km=float(os.getenv("DECAY_CRITICAL_PERIGEE_KM", "200.0")),
+        decay_warning_perigee_km=float(os.getenv("DECAY_WARNING_PERIGEE_KM", "300.0")),
+        decay_watch_perigee_km=float(os.getenv("DECAY_WATCH_PERIGEE_KM", "500.0")),
+        attitude_critical_deg=float(os.getenv("ATTITUDE_CRITICAL_DEG", "45.0")),
+        attitude_warning_deg=float(os.getenv("ATTITUDE_WARNING_DEG", "15.0")),
+        attitude_watch_deg=float(os.getenv("ATTITUDE_WATCH_DEG", "5.0")),
     )
 
 

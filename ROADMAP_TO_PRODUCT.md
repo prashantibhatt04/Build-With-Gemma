@@ -905,3 +905,62 @@ Also closed as part of the same PM pass: the feature was undiscoverable
 without reading source code - a real customer would never have found
 `WATCHED_NORAD_IDS` on their own. Documented in `.env.example` and a new
 README "Point it at your own satellite" setup step.
+
+## Post-Phase-6 improvement — configurable hazard-severity thresholds
+
+A second PM-level gap from the same customer-review pass: every
+CRITICAL/WARNING/WATCH/NOMINAL cutoff in this project (conjunction
+distance, decay perigee altitude, attitude pointing error) was a
+hardcoded literal inside `src/pipeline.py`'s `classify_*_severity`
+functions. That's a reasonable single set of defaults for a demo, but a
+real deployment isn't one-size-fits-all - a maneuverable, high-value
+satellite reasonably wants a bigger CRITICAL buffer than a defunct
+cubesat, and there's no one correct answer this project should hardcode
+for every real operator.
+
+Closed by adding nine new `Settings` fields (`src/config.py`) -
+`conjunction_critical_km`/`warning_km`/`watch_km`,
+`decay_critical_perigee_km`/`warning_perigee_km`/`watch_perigee_km`,
+`attitude_critical_deg`/`warning_deg`/`watch_deg` - all defaulting to
+exactly this project's original hardcoded values, so a deployment that
+never touches these env vars sees zero behavior change. Every
+`classify_*_severity` function in `pipeline.py` now accepts these as
+optional parameters (still defaulting to the original literals for any
+caller/test that doesn't pass them), and `analyze_node` reads the real
+configured values off `client.settings` via the codebase's established
+`getattr(settings, "field", default)` defensive-access pattern - the
+same convention already used for `gemma_backend`, needed here because
+`client.settings` is a real `Settings` dataclass in production but a
+minimal `SimpleNamespace` in this project's own test doubles.
+
+`conjunction_critical_km` also closes a real single-source-of-truth
+risk: `src/maneuver.py`'s `CRITICAL_THRESHOLD_KM` module constant used
+to be an independently-hardcoded duplicate of the pipeline's own
+conjunction CRITICAL threshold, with no mechanism keeping the two in
+sync. `verify_maneuver()` now takes an optional `critical_threshold_km`
+parameter (still defaulting to the module constant for direct callers),
+and both real call sites - `pipeline.py`'s `decide_node` and
+`logging_utils.py`'s `approve_maneuver` (the human-approval path) - pass
+the real configured `Settings.conjunction_critical_km` explicitly, so
+the value that classified a conjunction CRITICAL in the first place is
+the same value that verifies its avoidance maneuver.
+
+**Live-verified against a real, unmocked `Settings` object** - not just
+the test doubles: loaded `Settings` via `config.load_settings()` with
+`CONJUNCTION_CRITICAL_KM=15.0` set as a real process environment
+variable (real `os.getenv` parsing, no monkeypatching), ran a real
+10km-conjunction `TelemetryEvent` through the real `analyze_node`, and
+confirmed it classified CRITICAL - then reran the identical event with
+no override and confirmed the same code classified it WARNING instead,
+proving the configured value (not a coincidence, not a stale default)
+is what actually drove the decision.
+
+10 new tests across `tests/test_config.py` (defaults-preservation and
+real env-var parsing) and `tests/test_pipeline_smoke.py`/
+`tests/test_maneuver.py` (each `classify_*_severity` respecting
+non-default thresholds, `analyze_node` end-to-end using a configured
+client's real thresholds, `verify_maneuver` respecting a custom
+`critical_threshold_km`). Full suite: 400/400.
+
+Documented in `.env.example` (all nine new env vars) and a new README
+"Tune hazard severity thresholds" setup step.

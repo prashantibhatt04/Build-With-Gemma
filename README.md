@@ -238,6 +238,18 @@ field, instead of the demo placeholder. The dashboard sidebar shows which
 mode is active ("Monitoring your own asset(s)" vs. the demo-group
 notice). Leave unset to keep using the zero-setup demo groups.
 
+### 4. Tune hazard severity thresholds (optional)
+
+The CRITICAL/WARNING/WATCH/NOMINAL cutoffs for every hazard type
+(conjunction distance, decay perigee altitude, attitude pointing error)
+default to this project's original values but are configurable per
+deployment via `.env` — see the `CONJUNCTION_*_KM`, `DECAY_*_PERIGEE_KM`,
+and `ATTITUDE_*_DEG` variables in `.env.example` for the full list and
+their defaults. A maneuverable, high-value satellite might reasonably
+want a bigger CRITICAL buffer than a defunct cubesat — there's no one
+correct answer this project should hardcode for every real operator.
+Leave unset to keep the original thresholds unchanged.
+
 ## Run the demo
 
 ```bash

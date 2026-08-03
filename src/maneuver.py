@@ -94,10 +94,22 @@ def compute_avoidance_maneuver(
     )
 
 
-def verify_maneuver(original_min_distance_km: float, maneuver_plan: ManeuverPlan) -> VerifiedClearance:
+def verify_maneuver(
+    original_min_distance_km: float,
+    maneuver_plan: ManeuverPlan,
+    critical_threshold_km: float = CRITICAL_THRESHOLD_KM,
+) -> VerifiedClearance:
     """Re-derives the post-maneuver miss distance and checks it's both
     self-consistent and plausible before calling it cleared. Two distinct
     checks, and only one of them is actually independent:
+
+    critical_threshold_km defaults to this module's own constant, but
+    real callers (pipeline.decide_node, logging_utils.approve_maneuver)
+    pass the operator-configured Settings.conjunction_critical_km
+    explicitly instead - the same real value that actually classified
+    this conjunction CRITICAL in the first place (see
+    pipeline.classify_conjunction_severity), not a second hardcoded
+    constant that could silently drift out of sync with it.
 
     1. Recompute the resulting distance forward from the plan's delta-v
        and the same assumed lead time, rather than just echoing
@@ -123,7 +135,7 @@ def verify_maneuver(original_min_distance_km: float, maneuver_plan: ManeuverPlan
         original_min_distance_km > 0
         and maneuver_plan.magnitude_delta_v <= MAX_PLAUSIBLE_DELTA_V_M_S
     )
-    cleared = plausible and new_min_distance_km > CRITICAL_THRESHOLD_KM
+    cleared = plausible and new_min_distance_km > critical_threshold_km
 
     return VerifiedClearance(
         new_min_distance_km=new_min_distance_km,

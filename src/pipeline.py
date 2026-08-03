@@ -171,49 +171,82 @@ def compute_confidence(raw: dict) -> float:
     return 0.4
 
 
-def classify_conjunction_severity(min_distance_km: float) -> Severity:
+def classify_conjunction_severity(
+    min_distance_km: float,
+    critical_km: float = 5.0,
+    warning_km: float = 25.0,
+    watch_km: float = 100.0,
+) -> Severity:
     """Deterministic distance-based severity. Not Gemma-derived - this
-    needs to be reliable, so it's a plain threshold check."""
-    if min_distance_km < 5:
+    needs to be reliable, so it's a plain threshold check. Thresholds
+    default to this project's original hardcoded values but are real
+    operator-configurable settings (Settings.conjunction_critical_km and
+    friends, see src/config.py) - different real satellites/missions
+    have different risk tolerance, so there's no one correct universal
+    cutoff to hardcode. analyze_node (below) passes the configured
+    Settings' real values explicitly; callers that don't care (most
+    tests) get the original 5/25/100km behavior unchanged."""
+    if min_distance_km < critical_km:
         return Severity.CRITICAL
-    if min_distance_km < 25:
+    if min_distance_km < warning_km:
         return Severity.WARNING
-    if min_distance_km < 100:
+    if min_distance_km < watch_km:
         return Severity.WATCH
     return Severity.NOMINAL
 
 
-def classify_conjunction_finding(raw: dict) -> tuple[Severity, str]:
+def classify_conjunction_finding(
+    raw: dict,
+    critical_km: float = 5.0,
+    warning_km: float = 25.0,
+    watch_km: float = 100.0,
+) -> tuple[Severity, str]:
     """Dispatches a conjunction to real Pc-based severity when a real
     Space-Track CDM was matched to it (src/ingestion/cdm_enrichment.py
     populates `collision_probability` in raw_data when that happens),
     otherwise falls back to the existing distance threshold - see
     ROADMAP_TO_PRODUCT.md Phase 2. Returns (severity, severity_source) so
     callers can record which path actually produced the severity, never
-    silently blending the two."""
+    silently blending the two. Distance thresholds are only relevant to
+    the fallback path - see classify_conjunction_severity."""
     collision_probability = raw.get("collision_probability")
     if collision_probability is not None:
         return classify_pc_severity(collision_probability), "probability-of-collision"
-    return classify_conjunction_severity(raw["min_distance_km"]), "distance-threshold"
+    return (
+        classify_conjunction_severity(raw["min_distance_km"], critical_km, warning_km, watch_km),
+        "distance-threshold",
+    )
 
 
-def classify_decay_severity(perigee_altitude_km: float) -> Severity:
+def classify_decay_severity(
+    perigee_altitude_km: float,
+    critical_km: float = 200.0,
+    warning_km: float = 300.0,
+    watch_km: float = 500.0,
+) -> Severity:
     """Deterministic perigee-altitude-based severity for the decay hazard
     (see src/decay.py) - not Gemma-derived, matching
     classify_conjunction_severity's design. Real, well-established LEO
     decay bands: below these altitudes, real objects reliably reenter
     within roughly the stated timeframe, regardless of other factors -
-    not a precise reentry-time predictor, just a reliable threshold."""
-    if perigee_altitude_km < 200:
+    not a precise reentry-time predictor, just a reliable threshold.
+    Real operator-configurable settings (Settings.decay_critical_perigee_km
+    and friends) - defaults match the original hardcoded values."""
+    if perigee_altitude_km < critical_km:
         return Severity.CRITICAL  # days to weeks
-    if perigee_altitude_km < 300:
+    if perigee_altitude_km < warning_km:
         return Severity.WARNING  # weeks to months
-    if perigee_altitude_km < 500:
+    if perigee_altitude_km < watch_km:
         return Severity.WATCH  # months to a few years
     return Severity.NOMINAL
 
 
-def classify_attitude_severity(pointing_error_deg: float) -> Severity:
+def classify_attitude_severity(
+    pointing_error_deg: float,
+    critical_deg: float = 45.0,
+    warning_deg: float = 15.0,
+    watch_deg: float = 5.0,
+) -> Severity:
     """Deterministic pointing-error-based severity for the attitude/
     pointing-loss hazard (see src/ingestion/attitude_adapter.py - this
     hazard type is synthetic-only, no real data source exists) - not
@@ -221,12 +254,14 @@ def classify_attitude_severity(pointing_error_deg: float) -> Severity:
     classify_decay_severity's design. A few degrees of pointing error is
     within normal control-loop tolerance for most missions; tens of
     degrees indicates the spacecraft has likely dropped into a safe/
-    tumble mode and lost fine attitude control."""
-    if pointing_error_deg >= 45:
+    tumble mode and lost fine attitude control. Real operator-
+    configurable settings (Settings.attitude_critical_deg and friends) -
+    defaults match the original hardcoded values."""
+    if pointing_error_deg >= critical_deg:
         return Severity.CRITICAL
-    if pointing_error_deg >= 15:
+    if pointing_error_deg >= warning_deg:
         return Severity.WARNING
-    if pointing_error_deg >= 5:
+    if pointing_error_deg >= watch_deg:
         return Severity.WATCH
     return Severity.NOMINAL
 
@@ -323,17 +358,41 @@ def make_analyze_node(client: GemmaClient):
         perigee_altitude_km = raw.get("perigee_altitude_km")
         pointing_error_deg = raw.get("pointing_error_deg")
 
+        # getattr(..., default) throughout, not direct attribute access -
+        # client.settings is a real Settings object in production, but
+        # this project's own test doubles (FakeGemmaClient and friends)
+        # use a minimal SimpleNamespace with only the fields each test
+        # actually needs; defaults here match classify_*_severity's own
+        # defaults exactly, so a fake without these fields gets this
+        # project's original hardcoded thresholds, unchanged.
+        settings = client.settings
+
         severity_source = None
         if min_distance_km is not None:
-            severity, severity_source = classify_conjunction_finding(raw)
+            severity, severity_source = classify_conjunction_finding(
+                raw,
+                getattr(settings, "conjunction_critical_km", 5.0),
+                getattr(settings, "conjunction_warning_km", 25.0),
+                getattr(settings, "conjunction_watch_km", 100.0),
+            )
             description, description_provenance = _conjunction_description(client, raw)
             confidence = compute_confidence(raw)
         elif perigee_altitude_km is not None:
-            severity = classify_decay_severity(perigee_altitude_km)
+            severity = classify_decay_severity(
+                perigee_altitude_km,
+                getattr(settings, "decay_critical_perigee_km", 200.0),
+                getattr(settings, "decay_warning_perigee_km", 300.0),
+                getattr(settings, "decay_watch_perigee_km", 500.0),
+            )
             description, description_provenance = _decay_description(client, raw)
             confidence = compute_confidence(raw)
         elif pointing_error_deg is not None:
-            severity = classify_attitude_severity(pointing_error_deg)
+            severity = classify_attitude_severity(
+                pointing_error_deg,
+                getattr(settings, "attitude_critical_deg", 45.0),
+                getattr(settings, "attitude_warning_deg", 15.0),
+                getattr(settings, "attitude_watch_deg", 5.0),
+            )
             description, description_provenance = _attitude_description(client, raw)
             confidence = compute_confidence(raw)
         else:
@@ -734,6 +793,9 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
 
         action = ACTION_BY_SEVERITY[finding.severity]
         raw = state["telemetry"].raw_data
+        # See analyze_node's identical getattr(..., default) reasoning -
+        # client.settings may be a minimal test double here too.
+        conjunction_critical_km = getattr(client.settings, "conjunction_critical_km", 5.0)
 
         maneuver_plan: Optional[ManeuverPlan] = None
         verified_clearance: Optional[VerifiedClearance] = None
@@ -787,7 +849,9 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
                         # real GO/NO-GO, standing in for the unavailable human
                         # (see _maneuver_veto_check). Gemma can only make this
                         # MORE conservative than the physics check, never less.
-                        candidate_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
+                        candidate_clearance = verify_maneuver(
+                            raw["min_distance_km"], maneuver_plan, conjunction_critical_km,
+                        )
                         veto_go, veto_detail, veto_provenance = _maneuver_veto_check(
                             client, raw, maneuver_plan, candidate_clearance,
                         )

@@ -226,6 +226,7 @@ class DecisionLogger:
             if approved:
                 verified_clearance = verify_maneuver(
                     entry.telemetry.raw_data["min_distance_km"], entry.decision.maneuver_plan,
+                    self.settings.conjunction_critical_km,
                 )
                 status_note = f"[HUMAN DECISION: APPROVED by {approved_by}]"
             else:

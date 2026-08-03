@@ -20,6 +20,7 @@ from src.pipeline import (
     _parse_veto_json,
     _parse_veto_verdict,
     classify_attitude_severity,
+    classify_conjunction_severity,
     classify_decay_severity,
     make_analyze_node,
     make_decide_node,
@@ -331,6 +332,43 @@ def test_analyze_node_classifies_conjunction_severity_by_distance(
     assert finding.severity_source == "distance-threshold"
 
 
+def test_classify_conjunction_severity_respects_custom_thresholds():
+    """Real behavior this guards: a real operator's configured
+    conjunction_critical_km/warning_km/watch_km (Settings, see
+    src/config.py) must actually change where the CRITICAL/WARNING/WATCH
+    boundaries fall - not just exist as unused parameters. Uses
+    thresholds far from the 5/25/100km defaults so a bug that silently
+    ignored the arguments (falling back to the defaults) would fail this,
+    not just coincidentally pass."""
+    assert classify_conjunction_severity(1.5, critical_km=2.0, warning_km=50.0, watch_km=200.0) == Severity.CRITICAL
+    # 10km is WARNING under defaults (>5, <25) but would be NOMINAL/CRITICAL
+    # under a much stricter custom critical_km - confirms the real cutoff moved.
+    assert classify_conjunction_severity(10.0, critical_km=2.0, warning_km=5.0, watch_km=50.0) == Severity.WATCH
+    assert classify_conjunction_severity(300.0, critical_km=2.0, warning_km=50.0, watch_km=200.0) == Severity.NOMINAL
+
+
+def test_analyze_node_uses_configured_client_settings_thresholds_not_hardcoded_defaults():
+    """End-to-end guard: analyze_node must actually read client.settings'
+    real configured thresholds (as a real Settings object would carry
+    them) rather than the classify_*'s own hardcoded defaults. 10km is
+    WARNING under the project's original 5/25/100km defaults - this test
+    configures a much stricter conjunction_critical_km=15.0 and confirms
+    the SAME 10km event now classifies CRITICAL, proving the configured
+    value is what actually drove the decision, not a coincidence."""
+    event = _make_conjunction_event(10.0)
+    client = FakeGemmaClient()
+    client.settings.conjunction_critical_km = 15.0
+    client.settings.conjunction_warning_km = 25.0
+    client.settings.conjunction_watch_km = 100.0
+    analyze_node = make_analyze_node(client)
+
+    result_state = analyze_node({
+        "telemetry": event, "finding": None, "decision": None, "log_path": None,
+    })
+
+    assert result_state["finding"].severity == Severity.CRITICAL
+
+
 def test_analyze_node_uses_real_pc_when_a_cdm_was_matched():
     """A real Space-Track CDM match (src/ingestion/cdm_enrichment.py)
     merges collision_probability into raw_data - analyze_node must prefer
@@ -425,6 +463,15 @@ def _make_decay_event(perigee_altitude_km: float) -> TelemetryEvent:
 )
 def test_classify_decay_severity_by_perigee_altitude(perigee_altitude_km, expected_severity):
     assert classify_decay_severity(perigee_altitude_km) == expected_severity
+
+
+def test_classify_decay_severity_respects_custom_thresholds():
+    """Same guard as test_classify_conjunction_severity_respects_custom_thresholds
+    - a real operator's decay_*_perigee_km settings must actually move the
+    boundary, not just be accepted and ignored."""
+    assert classify_decay_severity(150.0, critical_km=100.0, warning_km=180.0, watch_km=250.0) == Severity.WARNING
+    assert classify_decay_severity(150.0, critical_km=160.0, warning_km=180.0, watch_km=250.0) == Severity.CRITICAL
+    assert classify_decay_severity(600.0, critical_km=100.0, warning_km=180.0, watch_km=250.0) == Severity.NOMINAL
 
 
 def test_analyze_node_classifies_decay_risk_and_uses_decay_description():
@@ -529,6 +576,15 @@ def _make_attitude_event(pointing_error_deg: float) -> TelemetryEvent:
 )
 def test_classify_attitude_severity_by_pointing_error(pointing_error_deg, expected_severity):
     assert classify_attitude_severity(pointing_error_deg) == expected_severity
+
+
+def test_classify_attitude_severity_respects_custom_thresholds():
+    """Same guard as the conjunction/decay threshold tests above - a real
+    operator's attitude_*_deg settings must actually move the boundary."""
+    assert classify_attitude_severity(8.0, critical_deg=30.0, warning_deg=20.0, watch_deg=10.0) == Severity.NOMINAL
+    assert classify_attitude_severity(8.0, critical_deg=30.0, warning_deg=20.0, watch_deg=5.0) == Severity.WATCH
+    assert classify_attitude_severity(25.0, critical_deg=30.0, warning_deg=20.0, watch_deg=5.0) == Severity.WARNING
+    assert classify_attitude_severity(35.0, critical_deg=30.0, warning_deg=20.0, watch_deg=5.0) == Severity.CRITICAL
 
 
 def test_analyze_node_classifies_attitude_and_uses_attitude_description():

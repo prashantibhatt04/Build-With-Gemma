@@ -1063,3 +1063,57 @@ TCA first" can already get it by clicking the new column header.
 log data, not fixtures): confirmed the new column renders real TCA
 values for conjunction rows and `None` for non-conjunction rows,
 side by side in the same table.
+
+## Post-Phase-6 improvement — dashboard filtering + a labeled event dropdown
+
+A third finding from the same fresh PM/customer review: `scripts/api.py`'s
+`GET /decisions` already supports `severity`/`source` query filters, but
+the dashboard's own "All decisions" table - the real risk board, per its
+own page caption - had no equivalent, just one unfiltered
+`st.dataframe`. Under continuous scheduled operation
+(`scripts/scheduler.py`) this table grows unbounded forever, so the
+human UI was degrading exactly when the product's headline feature
+(continuous background operation) was working as intended. The same
+review also flagged the separate "Inspect / mark reviewed" event
+dropdown as unusable for real triage - it listed bare `event_id`
+strings (UUIDs, or ids like `conj-33765-33818`) with no severity or
+subject, so an operator had to already know which id meant what before
+picking one.
+
+Closed both in the same pass. New `filter_entries()`
+(`src/dashboard_data.py`) narrows by severity and/or source - `None`/
+empty on either dimension means "no filter," matching the API's
+`Optional` query params, so the unfiltered default (nothing selected)
+is exactly the original behavior. Wired into a new
+`_render_all_decisions_table()` in `scripts/dashboard.py`: two
+multiselects ("Filter by severity", "Filter by source") built from the
+real distinct values actually present in the log, plus a
+"Showing X of Y logged decisions" caption that always reports the real
+filtered-vs-total count so a filter can never silently hide rows
+without saying so. Deliberately did not add offset/limit-style
+pagination controls - Streamlit's dataframe is already virtualized and
+handles the real row counts here without needing one, and filtering by
+severity/source is the actual triage need a real operator described,
+not raw pagination for its own sake.
+
+The event dropdown now reuses the exact same severity/subject
+`entries_to_rows()` already computes for the table (never a second,
+independently-derived formatter that could drift out of sync) via
+`st.selectbox`'s `format_func`, rendering e.g.
+`[WATCH] COSMOS 2251 DEB vs COSMOS 2251 DEB — conj-33844-34008-b9fa2d42`
+instead of the bare event_id - the underlying selected value is still
+the real event_id, unchanged for `mark_reviewed`/the raw JSON panel
+below it.
+
+7 new tests across `tests/test_dashboard_data.py` (`filter_entries`'s
+no-filter/severity-only/source-only/combined-AND/multi-value-OR
+behavior) and `tests/test_dashboard_app.py` (the two multiselects
+render with expected labels, selecting a severity narrows the real
+caption count, the event dropdown's options are labeled not bare ids).
+Full suite: 420/420. Live-verified against the real running dashboard
+with real accumulated log data (not fixtures): selecting "critical" in
+the severity filter live-narrowed "Showing 266 of 266 logged decisions"
+to "Showing 133 of 266", with every visible row confirmed
+`severity: critical`; the event dropdown showed a real labeled option
+(`[WATCH] COSMOS 2251 DEB vs COSMOS 2251 DEB — conj-33844-34008-
+b9fa2d42`) instead of a bare id.

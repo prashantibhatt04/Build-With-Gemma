@@ -50,7 +50,7 @@ import streamlit as st
 
 from src.auth import authenticate
 from src.config import settings
-from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
+from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, pending_approvals
 from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
@@ -83,6 +83,34 @@ def _render_metrics(metrics: dict) -> None:
     row2[3].metric("Blocked by budget", metrics["budget_insufficient"])
 
     st.caption(f"Gemma-authored rationale: {metrics['gemma_rationale_pct']:.0f}% (rest is deterministic fallback)")
+
+
+def _render_all_decisions_table(entries: list[DecisionLogEntry]) -> None:
+    """The real risk board itself - under continuous scheduled operation
+    (scripts/scheduler.py) this grows unbounded forever, and until now had
+    no way to narrow it, unlike scripts/api.py's GET /decisions (which
+    already supports severity/source filters). Filters are real narrowing
+    via filter_entries (src/dashboard_data.py), not just a display-side
+    highlight - the caption below always reports the real filtered vs.
+    total count so it's never ambiguous whether a filter is silently
+    hiding rows."""
+    st.subheader("All decisions")
+    if not entries:
+        st.caption("No logged decisions yet - use the sidebar to generate some.")
+        return
+
+    all_severities = sorted({e.finding.severity.value for e in entries})
+    all_sources = sorted({e.telemetry.source for e in entries})
+    filter_cols = st.columns(2)
+    selected_severities = filter_cols[0].multiselect("Filter by severity", all_severities)
+    selected_sources = filter_cols[1].multiselect("Filter by source", all_sources)
+
+    filtered = filter_entries(entries, selected_severities, selected_sources)
+    st.caption(f"Showing {len(filtered)} of {len(entries)} logged decisions.")
+    if filtered:
+        st.dataframe(entries_to_rows(filtered), width="stretch", hide_index=True)
+    else:
+        st.caption("No decisions match the selected filters.")
 
 
 def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogEntry], operator: str) -> None:
@@ -247,7 +275,16 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
         return
 
     event_ids = [e.telemetry.event_id for e in reversed(entries)]  # most recent first
-    selected_id = st.selectbox("Event", event_ids)
+    # Labeled with severity+subject (the same fields the "All decisions"
+    # table shows), not just a bare event_id - reusing entries_to_rows so
+    # this can never disagree with the table about what a row means.
+    rows_by_id = {row["event_id"]: row for row in entries_to_rows(entries)}
+
+    def _event_label(event_id: str) -> str:
+        row = rows_by_id[event_id]
+        return f"[{row['severity'].upper()}] {row['subject']} — {event_id}"
+
+    selected_id = st.selectbox("Event", event_ids, format_func=_event_label)
     selected = next(e for e in entries if e.telemetry.event_id == selected_id)
 
     st.json(selected.model_dump(mode="json"))
@@ -563,11 +600,7 @@ def main() -> None:
     _render_pending_approvals(logger, pending_approvals(entries), operator)
     st.divider()
 
-    st.subheader("All decisions")
-    if entries:
-        st.dataframe(entries_to_rows(entries), width="stretch", hide_index=True)
-    else:
-        st.caption("No logged decisions yet - use the sidebar to generate some.")
+    _render_all_decisions_table(entries)
     st.divider()
 
     _render_trends(entries)

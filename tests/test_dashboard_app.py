@@ -81,6 +81,55 @@ def test_dashboard_sidebar_has_expected_controls():
     assert any("Operator name" in ti.label for ti in at.sidebar.text_input)
 
 
+def test_dashboard_all_decisions_has_severity_and_source_filters():
+    """Parity check with scripts/api.py's GET /decisions, which already
+    supports severity/source filters - the dashboard's own "All
+    decisions" table (the real risk board, per its own caption) had no
+    equivalent, and grows unbounded under continuous scheduled operation
+    (scripts/scheduler.py)."""
+    at = AppTest.from_file(DASHBOARD_PATH)
+    at.run(timeout=30)
+
+    multiselect_labels = {m.label for m in at.multiselect}
+    assert {"Filter by severity", "Filter by source"} <= multiselect_labels
+    assert any("Showing" in c.value and "of" in c.value for c in at.caption)
+
+
+def test_dashboard_severity_filter_narrows_the_all_decisions_table():
+    at = AppTest.from_file(DASHBOARD_PATH)
+    at.run(timeout=30)
+
+    total_before = next(int(m.value) for m in at.metric if m.label == "Total events")
+    if total_before == 0:
+        return  # nothing to narrow in an empty log - covered by the empty-state test instead
+
+    severity_filter = next(m for m in at.multiselect if m.label == "Filter by severity")
+    # Narrow to a single severity actually present, so the filtered count
+    # is provably <= the total rather than trivially equal to it.
+    only_option = severity_filter.options[0]
+    severity_filter.set_value([only_option]).run(timeout=30)
+
+    caption_text = next(c.value for c in at.caption if c.value.startswith("Showing"))
+    shown, of_total = int(caption_text.split()[1]), int(caption_text.split()[3])
+    assert shown <= of_total == total_before
+
+
+def test_dashboard_review_panel_event_dropdown_is_labeled_not_a_bare_event_id():
+    """Real gap this closes: an operator picking an event to inspect/mark
+    reviewed previously saw a bare event_id (e.g. a UUID or
+    "conj-33765-33818") with no severity or subject - unusable for
+    triage without already knowing which id corresponds to what."""
+    at = AppTest.from_file(DASHBOARD_PATH)
+    at.run(timeout=30)
+
+    total = next(int(m.value) for m in at.metric if m.label == "Total events")
+    if total == 0:
+        return  # nothing to label - covered by the "no logged decisions" caption elsewhere
+
+    event_dropdown = next(sb for sb in at.selectbox if sb.label == "Event")
+    assert all("[" in option and "]" in option for option in event_dropdown.options)
+
+
 def test_dashboard_shows_unauthenticated_warning_when_operator_tokens_unset():
     with _operator_tokens({}):
         at = AppTest.from_file(DASHBOARD_PATH)

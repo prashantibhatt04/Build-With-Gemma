@@ -5,6 +5,7 @@ src/preflight.py's checks are separated from scripts/run_demo.py's printing).
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional, Sequence
 
 from .display import classify_decision_status
 from .schemas import DecisionLogEntry
@@ -93,3 +94,29 @@ def compute_metrics(entries: list[DecisionLogEntry]) -> dict:
 
 def pending_approvals(entries: list[DecisionLogEntry]) -> list[DecisionLogEntry]:
     return [e for e in entries if e.decision.awaiting_human_approval]
+
+
+def filter_entries(
+    entries: list[DecisionLogEntry],
+    severities: Optional[Sequence[str]] = None,
+    sources: Optional[Sequence[str]] = None,
+) -> list[DecisionLogEntry]:
+    """Narrows the "All decisions" table to a chosen severity/source
+    subset - parity with scripts/api.py's GET /decisions, which already
+    supports these same two filters but had no dashboard equivalent.
+    Under continuous scheduled operation (scripts/scheduler.py) this
+    table grows unbounded forever, and without any way to narrow it, the
+    human UI degrades exactly when the product's headline feature
+    (continuous background operation) is working as intended - real
+    operator value, not just API parity for its own sake.
+
+    An empty/None severities or sources means "no filter on that
+    dimension" (matching the API's Optional query params), not "match
+    nothing" - so the default (nothing selected in either dashboard
+    multiselect) is the original unfiltered behavior, unchanged."""
+    filtered = entries
+    if severities:
+        filtered = [e for e in filtered if e.finding.severity.value in severities]
+    if sources:
+        filtered = [e for e in filtered if e.telemetry.source in sources]
+    return filtered

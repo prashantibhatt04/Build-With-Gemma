@@ -1,7 +1,7 @@
 """Tests for src/dashboard_data.py - pure transforms, no Streamlit involved."""
 from datetime import datetime, timezone
 
-from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
+from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, pending_approvals
 from src.maneuver import compute_avoidance_maneuver, verify_maneuver
 from src.schemas import (
     AnomalyFinding,
@@ -250,3 +250,67 @@ def test_pending_approvals_returns_only_awaiting_entries():
     result = pending_approvals([awaiting, not_awaiting])
 
     assert result == [awaiting]
+
+
+def _dummy_entry(event_id: str, severity: Severity, source: str) -> DecisionLogEntry:
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source=source, raw_data={"value": 1.0},
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=severity, description="d", confidence=0.5)
+    decision = Decision(action="continue", rationale="r", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=_provenance(),
+    )
+
+
+def test_filter_entries_with_no_filters_returns_everything_unchanged():
+    """Real behavior this guards: the default dashboard state (nothing
+    selected in either multiselect) must be the original unfiltered
+    "All decisions" table, not an empty one."""
+    entries = [
+        _dummy_entry("a", Severity.CRITICAL, "celestrak"),
+        _dummy_entry("b", Severity.WATCH, "dummy-sensor"),
+    ]
+
+    assert filter_entries(entries) == entries
+    assert filter_entries(entries, severities=[], sources=[]) == entries
+
+
+def test_filter_entries_narrows_by_severity():
+    critical = _dummy_entry("a", Severity.CRITICAL, "celestrak")
+    watch = _dummy_entry("b", Severity.WATCH, "celestrak")
+
+    result = filter_entries([critical, watch], severities=["critical"])
+
+    assert result == [critical]
+
+
+def test_filter_entries_narrows_by_source():
+    celestrak_entry = _dummy_entry("a", Severity.WATCH, "celestrak")
+    dummy_entry = _dummy_entry("b", Severity.WATCH, "dummy-sensor")
+
+    result = filter_entries([celestrak_entry, dummy_entry], sources=["dummy-sensor"])
+
+    assert result == [dummy_entry]
+
+
+def test_filter_entries_combines_severity_and_source_as_an_and():
+    matches_both = _dummy_entry("a", Severity.CRITICAL, "celestrak")
+    wrong_severity = _dummy_entry("b", Severity.WATCH, "celestrak")
+    wrong_source = _dummy_entry("c", Severity.CRITICAL, "dummy-sensor")
+
+    result = filter_entries(
+        [matches_both, wrong_severity, wrong_source], severities=["critical"], sources=["celestrak"],
+    )
+
+    assert result == [matches_both]
+
+
+def test_filter_entries_multiple_selected_values_are_an_or_within_each_dimension():
+    critical = _dummy_entry("a", Severity.CRITICAL, "celestrak")
+    watch = _dummy_entry("b", Severity.WATCH, "celestrak")
+    nominal = _dummy_entry("c", Severity.NOMINAL, "celestrak")
+
+    result = filter_entries([critical, watch, nominal], severities=["critical", "watch"])
+
+    assert result == [critical, watch]

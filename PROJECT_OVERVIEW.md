@@ -282,9 +282,13 @@ mock, not a second copy of the pipeline's decision logic:
 - **Pending human approval inbox** — every CRITICAL maneuver currently
   awaiting a decision, with real Approve/Reject buttons wired to
   `DecisionLogger.approve_maneuver` — clicking one actually resolves it,
-  the same way `scripts/approve_maneuver.py` does.
+  the same way `scripts/approve_maneuver.py` does. A stale page, a
+  double-click, or a race with another operator or the CLI scripts
+  raises a real `ValueError` (already resolved, budget-blocked, not
+  CRITICAL) — caught and shown as a clean message, not a raw traceback.
 - **Full decision table** and an **inspect/mark-reviewed panel** for any
-  logged decision, wired to `DecisionLogger.mark_reviewed`.
+  logged decision, wired to `DecisionLogger.mark_reviewed` (same
+  error-handling treatment as Approve/Reject above).
 - **Orbit plot** — for any real celestrak-sourced event, a real 3D view
   of both objects' actual propagated trajectories (Earth to scale, a
   closest-approach marker) plus a distance-vs-time chart with severity

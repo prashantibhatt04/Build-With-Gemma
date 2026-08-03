@@ -24,12 +24,33 @@ same fail-safe philosophy as every Gemma call in this project.
 """
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import requests
 
 from .config import Settings, settings as default_settings
 from .schemas import DecisionLogEntry, Severity
 
 WEBHOOK_TIMEOUT_S = 10
+
+
+def _redact_webhook_url(text: str, webhook_url: str) -> str:
+    """Scrubs the real webhook URL out of an error message before it's
+    ever printed. Slack/Discord/Teams incoming-webhook URLs embed their
+    auth token directly in the URL - and `requests`' own exception
+    messages (ConnectionError, Timeout, ...) routinely include the
+    request URL verbatim, sometimes as the full URL and sometimes as just
+    its path (e.g. "Max retries exceeded with url: /services/T000/TOKEN"),
+    so both forms are redacted here. Without this, a webhook outage -
+    deliberately never fatal, by this module's own fail-safe design -
+    would otherwise print a live secret straight into process/container
+    logs, undermining the "never baked into the image" secret-handling
+    intent docker-compose.yml documents for this exact setting."""
+    redacted = text.replace(webhook_url, "<redacted-webhook-url>")
+    path = urlparse(webhook_url).path
+    if path and path != "/":
+        redacted = redacted.replace(path, "<redacted-webhook-path>")
+    return redacted
 
 
 def _subject_for_entry(entry: DecisionLogEntry) -> str:
@@ -83,7 +104,8 @@ def send_critical_alert(entry: DecisionLogEntry, settings: Settings = default_se
         response.raise_for_status()
         return True
     except requests.RequestException as exc:
-        print(f"WARNING: CRITICAL alert webhook failed for {entry.telemetry.event_id}: {exc}")
+        detail = _redact_webhook_url(str(exc), settings.alert_webhook_url)
+        print(f"WARNING: CRITICAL alert webhook failed for {entry.telemetry.event_id}: {detail}")
         return False
 
 
@@ -113,5 +135,6 @@ def send_health_alert(message: str, settings: Settings = default_settings) -> bo
         response.raise_for_status()
         return True
     except requests.RequestException as exc:
-        print(f"WARNING: system health alert webhook failed: {exc}")
+        detail = _redact_webhook_url(str(exc), settings.alert_webhook_url)
+        print(f"WARNING: system health alert webhook failed: {detail}")
         return False

@@ -13,6 +13,7 @@ why" signal for the demo; not flight software.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from .schemas import ManeuverPlan, VerifiedClearance
 
@@ -57,16 +58,31 @@ def compute_avoidance_maneuver(
     object_b: str,
     min_distance_km: float,
     relative_velocity_km_s: float,
-) -> ManeuverPlan:
+) -> Optional[ManeuverPlan]:
     """Compute a simplified avoidance maneuver for a CRITICAL conjunction.
 
     object_a/object_b identify the two objects (e.g. NORAD IDs or names)
     for logging/traceability - the simplified scalar-only physics here
     doesn't use per-object state, so they aren't consumed in the
     calculation itself.
+
+    Returns None when min_distance_km is already at or beyond this
+    model's target clearance - the displacement math below only knows how
+    to "grow the miss distance," so it has nothing to compute once that's
+    already true. This is real, not just theoretical: CRITICAL can also
+    come from the Pc-based path (see pc_severity.classify_pc_severity),
+    where tight covariance can classify a conjunction CRITICAL even at a
+    large miss distance. Without this check, required_displacement_km
+    goes negative and ManeuverPlan's magnitude_delta_v > 0 validation
+    raises uncaught. The caller must treat a None return the same way it
+    already treats CRITICAL decay/attitude findings - a real
+    deterministic response, just without maneuver/budget/veto/approval
+    machinery that doesn't apply here.
     """
     target_clearance_km = BASE_TARGET_CLEARANCE_KM + relative_velocity_km_s * VELOCITY_MARGIN_KM_PER_KM_S
     required_displacement_km = target_clearance_km - min_distance_km
+    if required_displacement_km <= 0:
+        return None
 
     magnitude_delta_v = (required_displacement_km * 1000) / ASSUMED_MANEUVER_LEAD_TIME_S
 

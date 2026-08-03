@@ -12,6 +12,7 @@ access. Set TEST_DATABASE_URL to point at a different instance if
 localhost's default isn't right for a given machine.
 """
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,8 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from src.logging_utils import DecisionLogger  # noqa: E402
+from src.maneuver import compute_avoidance_maneuver  # noqa: E402
 from src.postgres_logging import PostgresDecisionLogStore  # noqa: E402
 from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent  # noqa: E402
 
@@ -113,6 +116,77 @@ def _make_entry(event_id: str) -> DecisionLogEntry:
     return DecisionLogEntry(
         telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=provenance,
     )
+
+
+def _make_pending_approval_entry(event_id: str) -> DecisionLogEntry:
+    """A CRITICAL-severity entry shaped like decide_node's output on the
+    "api" backend: a real maneuver_plan, awaiting_human_approval=True -
+    see test_logging_utils.py's identical helper for the JSONL-backend
+    version of this same fixture."""
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="test",
+        raw_data={
+            "object_a_id": "1", "object_a_name": "A", "object_b_id": "2", "object_b_name": "B",
+            "min_distance_km": 3.0, "time_of_closest_approach": "2026-08-02T00:00:00+00:00",
+            "relative_velocity_km_s": 6.0,
+        },
+    )
+    finding = AnomalyFinding(
+        event_id=event_id, severity=Severity.CRITICAL, description="Test finding.", confidence=0.8,
+    )
+    plan = compute_avoidance_maneuver(
+        object_a="1", object_b="2", min_distance_km=3.0, relative_velocity_km_s=6.0,
+    )
+    decision = Decision(
+        action="abort", rationale="Maneuver proposed: awaiting human approval before execution.",
+        made_at=datetime.now(timezone.utc), maneuver_plan=plan, awaiting_human_approval=True,
+    )
+    provenance = GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0)
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=provenance,
+    )
+
+
+def test_approve_maneuver_is_race_safe_under_concurrent_calls_against_real_postgres(store):
+    """Real bug this closes, reproduced live during the original QA pass:
+    two threads racing approve()/reject() on the same CRITICAL event
+    against a real Postgres backend could both read
+    awaiting_human_approval=True before either wrote, both pass the
+    Python-side guard, and both write - the second silently clobbering
+    the first with no error to either caller (confirmed live: alice's
+    approval vanished, only bob's reject persisted, both calls returned
+    normally). update_if's SELECT ... FOR UPDATE row lock is what closes
+    this - verified here with real threads and a real database, not a
+    mock, since the whole point is exercising Postgres's actual locking
+    behavior."""
+    logger = DecisionLogger(store=store)
+    logger.log(_make_pending_approval_entry("pg-race-1"))
+
+    outcomes: dict[str, str] = {}
+    barrier = threading.Barrier(2)
+
+    def call(name: str, approved: bool) -> None:
+        barrier.wait()
+        try:
+            logger.approve_maneuver("pg-race-1", approved=approved, approved_by=name)
+            outcomes[name] = "succeeded"
+        except ValueError:
+            outcomes[name] = "raised"
+
+    alice = threading.Thread(target=call, args=("alice", True))
+    bob = threading.Thread(target=call, args=("bob", False))
+    alice.start()
+    bob.start()
+    alice.join()
+    bob.join()
+
+    assert list(outcomes.values()).count("succeeded") == 1
+    assert list(outcomes.values()).count("raised") == 1
+
+    winner = "alice" if outcomes["alice"] == "succeeded" else "bob"
+    final = logger.find_entry("pg-race-1")
+    assert final.decision.awaiting_human_approval is False
+    assert final.decision.maneuver_approval.approved_by == winner
 
 
 def test_append_then_find_round_trips_a_real_entry(store):

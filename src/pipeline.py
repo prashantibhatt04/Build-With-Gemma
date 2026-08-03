@@ -761,60 +761,70 @@ def make_decide_node(client: GemmaClient, budget_tracker: Optional[DeltaVBudgetT
                 min_distance_km=raw["min_distance_km"],
                 relative_velocity_km_s=raw["relative_velocity_km_s"],
             )
-            if budget_tracker.consume(maneuver_plan.magnitude_delta_v):
-                # Backend choice doubles as "is ground control reachable"
-                # in this system's model (see ManeuverApproval docstring):
-                # local (ollama) -> treat as unreachable -> self-approve
-                # based on the deterministic checks already done above.
-                # api (or anything else/unrecognized) -> treat as reachable
-                # -> require an explicit human approval before executing;
-                # unrecognized defaults to requiring a human as the safer
-                # fail-safe, not to full autonomy.
-                configured_backend = getattr(client.settings, "gemma_backend", None)
-                if configured_backend == "ollama":
-                    # A deterministic physics check verifies safety first,
-                    # then Gemma itself gets the same numbers and issues a
-                    # real GO/NO-GO, standing in for the unavailable human
-                    # (see _maneuver_veto_check). Gemma can only make this
-                    # MORE conservative than the physics check, never less.
-                    candidate_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
-                    veto_go, veto_detail, veto_provenance = _maneuver_veto_check(
-                        client, raw, maneuver_plan, candidate_clearance,
-                    )
-                    if veto_go:
-                        verified_clearance = candidate_clearance
-                        maneuver_approval = ManeuverApproval(
-                            mode="autonomous",
-                            approved=True,
-                            approved_by=None,
-                            approved_at=datetime.now(timezone.utc),
-                            reason=(
-                                "Local backend - ground control treated as unreachable; "
-                                "approved autonomously based on deterministic severity/physics "
-                                f"checks, {veto_detail}"
-                            ),
+            # None here means min_distance_km is already beyond this
+            # model's target clearance - real for the Pc-based CRITICAL
+            # path (see pc_severity.classify_pc_severity), where tight
+            # covariance can classify a conjunction CRITICAL at a large
+            # miss distance the displacement-maneuver model has nothing
+            # to compute for. Falls through with no maneuver/budget/
+            # veto/approval machinery, the same as CRITICAL decay/
+            # attitude findings - _decision_rationale's generic branch
+            # still narrates the deterministic action correctly.
+            if maneuver_plan is not None:
+                if budget_tracker.consume(maneuver_plan.magnitude_delta_v):
+                    # Backend choice doubles as "is ground control reachable"
+                    # in this system's model (see ManeuverApproval docstring):
+                    # local (ollama) -> treat as unreachable -> self-approve
+                    # based on the deterministic checks already done above.
+                    # api (or anything else/unrecognized) -> treat as reachable
+                    # -> require an explicit human approval before executing;
+                    # unrecognized defaults to requiring a human as the safer
+                    # fail-safe, not to full autonomy.
+                    configured_backend = getattr(client.settings, "gemma_backend", None)
+                    if configured_backend == "ollama":
+                        # A deterministic physics check verifies safety first,
+                        # then Gemma itself gets the same numbers and issues a
+                        # real GO/NO-GO, standing in for the unavailable human
+                        # (see _maneuver_veto_check). Gemma can only make this
+                        # MORE conservative than the physics check, never less.
+                        candidate_clearance = verify_maneuver(raw["min_distance_km"], maneuver_plan)
+                        veto_go, veto_detail, veto_provenance = _maneuver_veto_check(
+                            client, raw, maneuver_plan, candidate_clearance,
                         )
+                        if veto_go:
+                            verified_clearance = candidate_clearance
+                            maneuver_approval = ManeuverApproval(
+                                mode="autonomous",
+                                approved=True,
+                                approved_by=None,
+                                approved_at=datetime.now(timezone.utc),
+                                reason=(
+                                    "Local backend - ground control treated as unreachable; "
+                                    "approved autonomously based on deterministic severity/physics "
+                                    f"checks, {veto_detail}"
+                                ),
+                            )
+                        else:
+                            # Not executed - verified_clearance stays None, same
+                            # invariant as budget_insufficient/awaiting_human_approval.
+                            maneuver_vetoed = True
+                            maneuver_approval = ManeuverApproval(
+                                mode="autonomous",
+                                approved=False,
+                                approved_by="Gemma (autonomous safety review)",
+                                approved_at=datetime.now(timezone.utc),
+                                reason=(
+                                    "Maneuver was independently verified safe by "
+                                    f"deterministic physics, but {veto_detail}"
+                                ),
+                            )
                     else:
-                        # Not executed - verified_clearance stays None, same
-                        # invariant as budget_insufficient/awaiting_human_approval.
-                        maneuver_vetoed = True
-                        maneuver_approval = ManeuverApproval(
-                            mode="autonomous",
-                            approved=False,
-                            approved_by="Gemma (autonomous safety review)",
-                            approved_at=datetime.now(timezone.utc),
-                            reason=(
-                                "Maneuver was independently verified safe by "
-                                f"deterministic physics, but {veto_detail}"
-                            ),
-                        )
+                        awaiting_human_approval = True
                 else:
-                    awaiting_human_approval = True
-            else:
-                # Plan stays visible (mission control can see what would've
-                # been needed) but nothing was actually applied, so there's
-                # nothing to verify and no approval to seek yet.
-                budget_insufficient = True
+                    # Plan stays visible (mission control can see what would've
+                    # been needed) but nothing was actually applied, so there's
+                    # nothing to verify and no approval to seek yet.
+                    budget_insufficient = True
 
         rationale, rationale_provenance = _decision_rationale(
             client, finding, action, raw, maneuver_plan, verified_clearance,

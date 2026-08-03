@@ -134,6 +134,31 @@ def test_send_critical_alert_returns_false_and_does_not_raise_on_network_failure
 
 
 @patch("src.alerting.requests.post")
+def test_send_critical_alert_does_not_leak_the_webhook_secret_on_failure(mock_post, capsys):
+    """Real bug this closes: Slack/Discord/Teams webhook URLs embed their
+    auth token directly in the path, and requests' own exception messages
+    routinely include the request URL - sometimes the full URL, sometimes
+    (as reproduced here) just the path, e.g. "Max retries exceeded with
+    url: /services/.../SECRETTOKEN". Printing that unredacted on a failed
+    send - which this module deliberately never treats as fatal, so it
+    WILL print - would leak a live secret straight into process/container
+    logs."""
+    webhook_url = "https://hooks.slack.com/services/T000/B111/SECRETTOKEN123"
+    mock_post.side_effect = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='hooks.slack.com', port=443): Max retries exceeded with "
+        "url: /services/T000/B111/SECRETTOKEN123 (Caused by NewConnectionError(...))"
+    )
+    entry = _conjunction_entry(Severity.CRITICAL)
+
+    result = send_critical_alert(entry, _settings(alert_webhook_url=webhook_url))
+
+    assert result is False
+    printed = capsys.readouterr().out
+    assert "SECRETTOKEN123" not in printed
+    assert "redacted" in printed
+
+
+@patch("src.alerting.requests.post")
 def test_send_health_alert_skips_when_no_webhook_configured(mock_post):
     result = send_health_alert("scheduler down", _settings(alert_webhook_url=""))
 
@@ -163,3 +188,21 @@ def test_send_health_alert_returns_false_and_does_not_raise_on_network_failure(m
     result = send_health_alert("scheduler down", _settings(alert_webhook_url="https://example.com/webhook"))
 
     assert result is False  # did not raise
+
+
+@patch("src.alerting.requests.post")
+def test_send_health_alert_does_not_leak_the_webhook_secret_on_failure(mock_post, capsys):
+    """Same real bug as the CRITICAL-alert version above, for the
+    separate health-alert send path - both call the same
+    requests.post/print pattern, so both needed the fix independently."""
+    webhook_url = "https://hooks.slack.com/services/T000/B111/SECRETTOKEN123"
+    mock_post.side_effect = requests.exceptions.ConnectionError(
+        "Max retries exceeded with url: /services/T000/B111/SECRETTOKEN123"
+    )
+
+    result = send_health_alert("scheduler down", _settings(alert_webhook_url=webhook_url))
+
+    assert result is False
+    printed = capsys.readouterr().out
+    assert "SECRETTOKEN123" not in printed
+    assert "redacted" in printed

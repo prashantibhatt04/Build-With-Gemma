@@ -12,11 +12,12 @@ RAG, trends, alerting, pipeline.make_log_node) changing at all.
 """
 from __future__ import annotations
 
+import fcntl
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import Settings, settings as default_settings
 from .maneuver import verify_maneuver
@@ -45,6 +46,27 @@ class DecisionLogStore(ABC):
     def update(self, event_id: str, updated_entry: DecisionLogEntry) -> None:
         """Replaces the persisted entry matching event_id. Raises
         ValueError if no such entry exists."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_if(
+        self,
+        event_id: str,
+        guard: Callable[[DecisionLogEntry], None],
+        mutate: Callable[[DecisionLogEntry], DecisionLogEntry],
+    ) -> DecisionLogEntry:
+        """Atomic read-check-write: finds the entry matching event_id,
+        calls guard(entry) (which must raise ValueError if the entry
+        isn't in a state this update applies to), then persists
+        mutate(entry) - all as one operation a concurrent caller can't
+        interleave with (a real Postgres row lock, a real flock'd JSONL
+        file). Unlike find()+update() called separately, two callers
+        racing on the same event_id can't both pass the same guard check
+        and silently overwrite each other - see approve_maneuver, the
+        real bug this exists to close (an approve and a reject racing on
+        the same CRITICAL event could otherwise both "succeed" while only
+        one write actually survived). Raises ValueError if no entry with
+        this event_id exists, or if guard(entry) raises."""
         raise NotImplementedError
 
     @abstractmethod
@@ -93,6 +115,36 @@ class JSONLDecisionLogStore(DecisionLogStore):
         lines[line_index] = updated_entry.model_dump_json()
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def update_if(
+        self,
+        event_id: str,
+        guard: Callable[[DecisionLogEntry], None],
+        mutate: Callable[[DecisionLogEntry], DecisionLogEntry],
+    ) -> DecisionLogEntry:
+        # An exclusive flock on the specific date-file, held across the
+        # whole read-check-write - real cross-process AND cross-thread
+        # mutual exclusion (flock is scoped to the open file description,
+        # so two separate opens of the same path from different threads
+        # or processes correctly contend for the same lock), unlike the
+        # separate find()-then-update() calls this replaces.
+        for path in sorted(Path(self.log_dir).glob("decisions-*.jsonl")):
+            with open(path, "r+", encoding="utf-8") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                lines = f.read().splitlines()
+                for i, line in enumerate(lines):
+                    entry = DecisionLogEntry.model_validate_json(line)
+                    if entry.telemetry.event_id == event_id:
+                        guard(entry)
+                        updated = mutate(entry)
+                        lines[i] = updated.model_dump_json()
+                        f.seek(0)
+                        f.write("\n".join(lines) + "\n")
+                        f.truncate()
+                        return updated
+                # Lock released when the `with` block exits below, before
+                # moving on to check the next file.
+        raise ValueError(f"No logged decision found with event_id={event_id!r}")
+
     def load_all(self) -> list[DecisionLogEntry]:
         entries = []
         for path in sorted(Path(self.log_dir).glob("decisions-*.jsonl")):
@@ -134,17 +186,14 @@ class DecisionLogger:
         """Sets human_reviewed/human_reviewed_at/reviewed_by on the logged
         entry matching event_id. Raises ValueError if no entry with this
         event_id is found."""
-        entry = self.find_entry(event_id)
-        if entry is None:
-            raise ValueError(f"No logged decision found with event_id={event_id!r}")
+        def mutate(entry: DecisionLogEntry) -> DecisionLogEntry:
+            return entry.model_copy(update={
+                "human_reviewed": True,
+                "human_reviewed_at": datetime.now(timezone.utc),
+                "reviewed_by": reviewed_by,
+            })
 
-        updated = entry.model_copy(update={
-            "human_reviewed": True,
-            "human_reviewed_at": datetime.now(timezone.utc),
-            "reviewed_by": reviewed_by,
-        })
-        self._store.update(event_id, updated)
-        return updated
+        return self._store.update_if(event_id, guard=lambda entry: None, mutate=mutate)
 
     def approve_maneuver(self, event_id: str, approved: bool, approved_by: str) -> DecisionLogEntry:
         """Resolves a CRITICAL-severity maneuver that's awaiting human
@@ -159,42 +208,43 @@ class DecisionLogger:
 
         Raises ValueError if no matching entry is found, or if it isn't
         actually awaiting approval (already resolved, budget-blocked
-        instead, or not CRITICAL at all).
+        instead, or not CRITICAL at all) - checked atomically against the
+        stored entry, so two calls racing on the same event_id (e.g. an
+        approve and a reject arriving at nearly the same time) can't both
+        pass this check and silently overwrite each other; the loser gets
+        this ValueError instead of appearing to succeed.
         """
-        entry = self.find_entry(event_id)
-        if entry is None:
-            raise ValueError(f"No logged decision found with event_id={event_id!r}")
+        def guard(entry: DecisionLogEntry) -> None:
+            if not entry.decision.awaiting_human_approval:
+                raise ValueError(
+                    f"Decision for event_id={event_id!r} is not awaiting human approval "
+                    f"(awaiting_human_approval={entry.decision.awaiting_human_approval})"
+                )
 
-        if not entry.decision.awaiting_human_approval:
-            raise ValueError(
-                f"Decision for event_id={event_id!r} is not awaiting human approval "
-                f"(awaiting_human_approval={entry.decision.awaiting_human_approval})"
+        def mutate(entry: DecisionLogEntry) -> DecisionLogEntry:
+            now = datetime.now(timezone.utc)
+            if approved:
+                verified_clearance = verify_maneuver(
+                    entry.telemetry.raw_data["min_distance_km"], entry.decision.maneuver_plan,
+                )
+                status_note = f"[HUMAN DECISION: APPROVED by {approved_by}]"
+            else:
+                verified_clearance = None
+                status_note = f"[HUMAN DECISION: REJECTED by {approved_by}]"
+
+            approval = ManeuverApproval(
+                mode="human",
+                approved=approved,
+                approved_by=approved_by,
+                approved_at=now,
+                reason=f"{'Approved' if approved else 'Rejected'} via approve_maneuver (CLI/demo prompt).",
             )
+            updated_decision = entry.decision.model_copy(update={
+                "awaiting_human_approval": False,
+                "verified_clearance": verified_clearance,
+                "maneuver_approval": approval,
+                "rationale": f"{entry.decision.rationale} {status_note}",
+            })
+            return entry.model_copy(update={"decision": updated_decision})
 
-        now = datetime.now(timezone.utc)
-        if approved:
-            verified_clearance = verify_maneuver(
-                entry.telemetry.raw_data["min_distance_km"], entry.decision.maneuver_plan,
-            )
-            status_note = f"[HUMAN DECISION: APPROVED by {approved_by}]"
-        else:
-            verified_clearance = None
-            status_note = f"[HUMAN DECISION: REJECTED by {approved_by}]"
-
-        approval = ManeuverApproval(
-            mode="human",
-            approved=approved,
-            approved_by=approved_by,
-            approved_at=now,
-            reason=f"{'Approved' if approved else 'Rejected'} via approve_maneuver (CLI/demo prompt).",
-        )
-        updated_decision = entry.decision.model_copy(update={
-            "awaiting_human_approval": False,
-            "verified_clearance": verified_clearance,
-            "maneuver_approval": approval,
-            "rationale": f"{entry.decision.rationale} {status_note}",
-        })
-        updated_entry = entry.model_copy(update={"decision": updated_decision})
-
-        self._store.update(event_id, updated_entry)
-        return updated_entry
+        return self._store.update_if(event_id, guard=guard, mutate=mutate)

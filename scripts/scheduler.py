@@ -29,6 +29,7 @@ every cycle regardless of what already executed.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from collections import Counter
@@ -72,6 +73,50 @@ def default_adapters() -> list[DataSourceAdapter]:
 # ROADMAP_TO_PRODUCT.md Phase 4) - a sensible real-world default cadence,
 # overridable via --interval-seconds for demo/testing.
 DEFAULT_INTERVAL_SECONDS = 8 * 60 * 60
+
+# A relative "data/..." path, matching the convention every other cache
+# in this project already uses (tle_source.py's DEFAULT_CACHE_DIR,
+# rag.py's DEFAULT_CACHE_DIR) - resolves under docker-compose.yml's own
+# app_data volume when run in Docker, or the repo root otherwise.
+HEARTBEAT_PATH = Path("data/scheduler_heartbeat.json")
+
+# How much slack a healthcheck gives a real tick before treating the
+# scheduler as stuck: 2 full intervals (one legitimately slow tick, plus
+# one full cycle of margin) rather than 1x - a single tick that runs a
+# little long (e.g. a slow Space-Track response) must not itself look
+# like a hang, since ticks aren't fired on a hard timer here (each
+# iteration sleeps AFTER finishing, so a slow tick delays the next one
+# by exactly its own overrun) - plus a fixed 5-minute grace for the
+# healthcheck's own poll cadence.
+HEARTBEAT_FRESHNESS_MULTIPLIER = 2
+HEARTBEAT_FRESHNESS_GRACE_SECONDS = 5 * 60
+
+
+def write_heartbeat(path: Path, interval_seconds: float, tick_number: int) -> None:
+    """A liveness signal, not a correctness one - written whether the
+    most recent tick succeeded or failed (run_tick's own try/except
+    already handles a bad tick without killing the process; this just
+    proves the loop itself is still alive and progressing, the same
+    "liveness not correctness" framing scripts/api.py's /health already
+    uses for its own real storage check)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    heartbeat = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "interval_seconds": interval_seconds,
+        "tick_number": tick_number,
+    }
+    path.write_text(json.dumps(heartbeat))
+
+
+def heartbeat_is_fresh(heartbeat: dict, now: datetime) -> bool:
+    """Self-describing on purpose: the heartbeat carries its own
+    interval_seconds, so a healthcheck script never needs external
+    knowledge of how this particular scheduler instance was configured
+    (--interval-seconds can differ per deployment)."""
+    timestamp = datetime.fromisoformat(heartbeat["timestamp"])
+    threshold = heartbeat["interval_seconds"] * HEARTBEAT_FRESHNESS_MULTIPLIER + HEARTBEAT_FRESHNESS_GRACE_SECONDS
+    age_seconds = (now - timestamp).total_seconds()
+    return age_seconds < threshold
 
 
 def run_tick(
@@ -134,6 +179,11 @@ def main() -> None:
 
     tick_number = 0
     consecutive_failures = 0
+    # Written before the first real tick, too - a Docker healthcheck's
+    # own start_period grace window covers the gap until then, but a
+    # process that dies before ever reaching the loop shouldn't have to
+    # wait a full interval to look unhealthy.
+    write_heartbeat(HEARTBEAT_PATH, args.interval_seconds, tick_number)
     try:
         while args.max_iterations is None or tick_number < args.max_iterations:
             tick_number += 1
@@ -156,6 +206,10 @@ def main() -> None:
                         f"latest error: {exc}",
                         settings,
                     )
+            # Written after every tick regardless of outcome - proves the
+            # LOOP is alive, not that the tick succeeded (consecutive
+            # failure alerting already covers "succeeded but broken").
+            write_heartbeat(HEARTBEAT_PATH, args.interval_seconds, tick_number)
 
             if args.max_iterations is not None and tick_number >= args.max_iterations:
                 break

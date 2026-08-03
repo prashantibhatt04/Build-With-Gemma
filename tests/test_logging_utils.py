@@ -1,5 +1,6 @@
 """Tests for DecisionLogger, including the human-review stub
 (find_entry/mark_reviewed). No network calls."""
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -119,6 +120,49 @@ def test_approve_maneuver_raises_if_not_awaiting_approval(tmp_path):
 
     with pytest.raises(ValueError, match="not awaiting human approval"):
         logger.approve_maneuver("nominal-1", approved=True, approved_by="alice")
+
+
+def test_approve_maneuver_is_race_safe_under_concurrent_calls(tmp_path):
+    """Real bug this closes: approve_maneuver used to read the entry,
+    check awaiting_human_approval in Python, then write it back as two
+    separate, unsynchronized steps (find_entry() then _store.update()).
+    Two real threads racing an approve and a reject on the same event_id
+    could both read awaiting_human_approval=True, both pass the guard,
+    and both write - the second write silently clobbering the first with
+    no error to either caller. Uses real OS threads and the real
+    JSONLDecisionLogStore file-locking path (update_if), not a mock, to
+    actually exercise the fix rather than just asserting it exists."""
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_pending_approval_entry("race-1"))
+
+    outcomes: dict[str, str] = {}
+    barrier = threading.Barrier(2)
+
+    def call(name: str, approved: bool) -> None:
+        barrier.wait()  # maximize actual overlap between the two calls
+        try:
+            logger.approve_maneuver("race-1", approved=approved, approved_by=name)
+            outcomes[name] = "succeeded"
+        except ValueError:
+            outcomes[name] = "raised"
+
+    alice = threading.Thread(target=call, args=("alice", True))
+    bob = threading.Thread(target=call, args=("bob", False))
+    alice.start()
+    bob.start()
+    alice.join()
+    bob.join()
+
+    # Exactly one caller wins - the other must see the guard correctly
+    # fail (already resolved), never silently "succeed" with a write that
+    # then gets overwritten.
+    assert list(outcomes.values()).count("succeeded") == 1
+    assert list(outcomes.values()).count("raised") == 1
+
+    winner = "alice" if outcomes["alice"] == "succeeded" else "bob"
+    final = logger.find_entry("race-1")
+    assert final.decision.awaiting_human_approval is False
+    assert final.decision.maneuver_approval.approved_by == winner
 
 
 def test_mark_reviewed_updates_matching_entry_and_leaves_others_untouched(tmp_path):

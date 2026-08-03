@@ -28,6 +28,33 @@ def test_compute_avoidance_maneuver_returns_plan_for_critical_range():
     assert (datetime.now(timezone.utc) - plan.computed_at).total_seconds() < 5
 
 
+def test_returns_none_when_min_distance_already_beyond_target_clearance():
+    """Real bug this closes: the Pc-based CRITICAL path (pc_severity.py)
+    can classify a conjunction CRITICAL even at a large miss distance -
+    tight covariance, not proximity, drives it. The old code computed a
+    negative required_displacement_km here, which made ManeuverPlan's
+    magnitude_delta_v > 0 validation raise uncaught. There's nothing this
+    displacement-only model can compute once we're already past its own
+    target clearance, so it must return None instead."""
+    plan = compute_avoidance_maneuver(
+        object_a="a", object_b="b", min_distance_km=250.0, relative_velocity_km_s=13.788,
+    )
+
+    assert plan is None
+
+
+def test_returns_a_plan_right_up_to_the_boundary():
+    """min_distance_km exactly at target_clearance_km is the boundary the
+    None-check sits on - confirms it's a real boundary, not an off-by-one
+    that also swallows legitimate close-range cases."""
+    plan = compute_avoidance_maneuver(
+        object_a="a", object_b="b", min_distance_km=29.999, relative_velocity_km_s=0.0,
+    )
+
+    assert plan is not None
+    assert plan.magnitude_delta_v > 0
+
+
 def test_larger_displacement_for_smaller_starting_distance():
     closer = compute_avoidance_maneuver(
         object_a="a", object_b="b", min_distance_km=0.5, relative_velocity_km_s=5.0,

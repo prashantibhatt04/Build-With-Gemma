@@ -732,3 +732,65 @@ Postgres table, not mocked), plus API-level rate-limit/metrics tests
 folded into `test_api.py`. Full suite: **344/344**, including all 11
 Postgres-backed tests in `test_postgres_logging.py` running against a
 real reachable local Postgres instance (not skipped).
+
+## Post-Phase-6 improvement — real Docker healthchecks for all four services
+
+A real operational gap, not a hypothetical one: `docker-compose.yml`
+only ever had a `healthcheck` on the `postgres` service. `dashboard`,
+`scheduler`, and `api` had none - Docker (or any orchestrator reading
+its health status) had no way to tell a hung or silently-crashed-but-
+still-running application process from a healthy one; only an outright
+container exit was visible.
+
+Closed for all three, each using infrastructure that already existed
+rather than new surface area: **`api`** gets a real `python -c
+"urllib.request.urlopen(...)"` probe against its own already-built
+`GET /health` (Phase 6/REST API section above) - the same endpoint that
+actually touches storage, not just confirms the process is up.
+**`dashboard`** probes Streamlit's own built-in `/_stcore/health`
+endpoint the same way - real and standard, not something this project
+added. Neither service needed `curl` installed into the
+`python:3.12-slim` image just for this; `python`'s own `urllib` was
+already there.
+
+**`scheduler`** has no HTTP server to probe at all, so it needed a real
+new mechanism: `scripts/scheduler.py` now writes a small heartbeat file
+(`data/scheduler_heartbeat.json` - the same relative `data/...`
+convention `tle_source.py`/`rag.py`'s cache dirs already use) at startup
+and after every tick, *whether that tick succeeded or failed* -
+deliberately a liveness signal ("the loop is still alive and
+progressing"), not a correctness one (the existing consecutive-failure
+alerting from Phase 5 already covers "running but broken"). The
+heartbeat carries its own `interval_seconds`, so freshness checking
+never needs external knowledge of a given deployment's configured
+`--interval-seconds`. A new `scripts/healthcheck_scheduler.py` reads it
+and exits 0/1 - the real Docker `HEALTHCHECK CMD`. Freshness threshold
+is `2 × interval_seconds + 5 minutes`: one full interval of slack for a
+single legitimately slow tick (a slow Space-Track response must not
+itself look like a hang, since this scheduler sleeps *after* each tick
+rather than firing on a hard timer) plus a second interval of margin
+before concluding the loop itself is actually stuck.
+
+10 new tests (`test_scheduler.py`: heartbeat writing, freshness math at
+both a 60s and the real 8-hour default interval, the "one slow tick is
+fine" boundary; `test_healthcheck_scheduler.py`: the real 0/1 exit-code
+contract for fresh/stale/missing/malformed heartbeat files). Full
+suite: **354/354**.
+
+**Live-verified against a real `docker compose up`, not just unit
+tests:** built and brought up the full real four-service stack; within
+its healthchecks' `start_period` windows, `docker compose ps` reported
+all four services - not only `postgres` - as `(healthy)`. Directly
+inspected the real heartbeat file inside the running `scheduler`
+container (`{"timestamp": ..., "interval_seconds": 28800, "tick_number":
+0}` - the real 8-hour default, tick 0 since no tick had completed yet
+in that short a window) and ran `scripts/healthcheck_scheduler.py`
+inside the container by hand, confirming a real exit 0. Then forced a
+real negative case rather than only trusting the unit tests: overwrote
+that same real heartbeat file's timestamp to a stale value inside the
+running container and re-ran the healthcheck script, which correctly
+exited 1 with an "unhealthy: heartbeat is stale" message - the exact
+mechanism Docker's own `HEALTHCHECK` invokes, proven both ways against
+a real container rather than only asserted in isolation. Torn down and
+volumes removed afterward, same discipline as every other Docker
+verification in this project.

@@ -140,6 +140,8 @@ phase and why.
   programmatic integration (Phase 6, see below)
 - `scripts/scheduler.py` — continuous background screening loop for
   unattended/production operation (see below)
+- `scripts/healthcheck_scheduler.py` — real Docker HEALTHCHECK for the
+  scheduler service, since it has no HTTP server of its own to probe
 - `scripts/retention_cleanup.py`, `scripts/backup_postgres.sh` — real
   retention/backup tooling for the Postgres backend (see below)
 - `scripts/query_log.py` — standalone CLI for "ask about the mission log"
@@ -330,6 +332,14 @@ come from `.env` via `env_file`, never baked into the image. Set
 localhost — see `src/auth.py`; without it, the dashboard's "Operator
 name" field is free text anyone with the page open can set to anything,
 and the API's write endpoints refuse to run at all.
+
+All four services report real Docker health status (`docker compose
+ps`), not just Postgres: the dashboard via Streamlit's own
+`/_stcore/health`, the API via its real `/health` (which actually
+touches storage, not just "the process is up"), and the scheduler via
+`scripts/healthcheck_scheduler.py`, which checks a heartbeat file
+`scripts/scheduler.py` writes at startup and after every tick — the
+only one of the three with no HTTP server to probe directly.
 
 ## Retention and backup (Postgres backend only)
 

@@ -120,11 +120,20 @@ def parse_tle_blocks(text: str) -> list[tuple[str, str, str]]:
     lines, repeated) into (name, tle_line1, tle_line2) tuples. Silently
     skips anything that doesn't look like a valid 3-line block, rather
     than raising - real CelesTrak responses are well-formed, but this
-    stays defensive against a truncated/malformed fetch."""
+    stays defensive against a truncated/malformed fetch.
+
+    Resyncs one line at a time rather than striding in fixed +3 jumps -
+    a fixed stride means one missing/corrupted line anywhere in the
+    middle of the file desyncs every block after it, silently dropping
+    them all rather than just the one block that was actually bad."""
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     blocks = []
-    for i in range(0, len(lines) - 2, 3):
+    i = 0
+    while i <= len(lines) - 3:
         name, line1, line2 = lines[i], lines[i + 1], lines[i + 2]
         if line1.startswith("1 ") and line2.startswith("2 "):
             blocks.append((name.strip(), line1, line2))
+            i += 3
+        else:
+            i += 1
     return blocks

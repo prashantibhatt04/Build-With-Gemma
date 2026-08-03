@@ -20,7 +20,7 @@ JSONLDecisionLogStore's own load_all() ordering exactly.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -94,6 +94,37 @@ class PostgresDecisionLogStore(DecisionLogStore):
                 (updated_entry.model_dump_json(), target_id[0]),
             )
             conn.commit()
+
+    def update_if(
+        self,
+        event_id: str,
+        guard: Callable[[DecisionLogEntry], None],
+        mutate: Callable[[DecisionLogEntry], DecisionLogEntry],
+    ) -> DecisionLogEntry:
+        # SELECT ... FOR UPDATE takes a real row lock for the rest of
+        # this transaction - a concurrent update_if() on the same row
+        # blocks here until this one commits (below), then re-reads the
+        # now-committed row before its own guard() runs. That's what
+        # closes the race: two callers can no longer both read the
+        # pre-update state, both pass guard(), and both write - the
+        # second one now genuinely sees the first's result.
+        with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
+            row = conn.execute(
+                f"SELECT id, entry_json FROM {self.table_name} WHERE event_id = %s "
+                "ORDER BY id ASC LIMIT 1 FOR UPDATE",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No logged decision found with event_id={event_id!r}")
+            entry = DecisionLogEntry.model_validate(row["entry_json"])
+            guard(entry)
+            updated = mutate(entry)
+            conn.execute(
+                f"UPDATE {self.table_name} SET entry_json = %s WHERE id = %s",
+                (updated.model_dump_json(), row["id"]),
+            )
+            conn.commit()
+        return updated
 
     def load_all(self) -> list[DecisionLogEntry]:
         with psycopg.connect(self.database_url) as conn:

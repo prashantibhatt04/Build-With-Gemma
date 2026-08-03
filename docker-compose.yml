@@ -50,6 +50,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Streamlit's own built-in health endpoint - real and standard, not
+    # something this project added. No curl in the python:3.12-slim base
+    # image, so python's own urllib does the request instead of adding a
+    # package just for this.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   scheduler:
     build: .
@@ -69,6 +79,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # No HTTP server to probe here (unlike dashboard/api) - real
+    # liveness comes from scripts/healthcheck_scheduler.py reading the
+    # heartbeat file scheduler.py writes at startup and after every
+    # tick. interval is deliberately coarse (5m) to match this
+    # service's own real multi-hour tick cadence, not a fixed guess.
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck_scheduler.py"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   api:
     build: .
@@ -84,6 +105,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # scripts/api.py's real /health - actually touches storage (see its
+    # own docstring), not just "the process is up". No auth needed, same
+    # as any load-balancer/orchestrator health probe.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   postgres_data:

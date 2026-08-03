@@ -42,6 +42,48 @@ def test_parse_tle_blocks_handles_empty_text():
     assert parse_tle_blocks("") == []
 
 
+def test_parse_tle_blocks_recovers_a_valid_block_after_a_corrupted_one():
+    """Real bug this closes: the old fixed +3 stride desynced after ANY
+    corrupted/missing line and silently dropped every block after it, not
+    just the corrupted one - a single network hiccup could zero out a
+    whole scan. A genuinely bad block (missing line2) must only cost that
+    one object, not the well-formed one right after it."""
+    text = (
+        "OBJECT A\n"
+        "1 25544U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998\n"
+        # OBJECT A's line2 is missing here - line3 below is really OBJECT B's name.
+        "OBJECT B\n"
+        "1 33333U 07026A   18135.50000000  .00000010  00000-0  10000-4 0  9991\n"
+        "2 33333  98.6000 100.0000 0001000  90.0000 270.0000 14.20000000123456\n"
+    )
+
+    blocks = parse_tle_blocks(text)
+
+    assert len(blocks) == 1
+    assert blocks[0][0] == "OBJECT B"
+
+
+def test_parse_tle_blocks_resyncs_across_multiple_corrupted_blocks():
+    """Not just recovery from one bad block - a second, later corruption
+    must not desync the parser again either."""
+    text = (
+        "BAD A\n"
+        "not a valid line1\n"
+        "GOOD A\n"
+        "1 11111U 07026A   18135.50000000  .00000010  00000-0  10000-4 0  9991\n"
+        "2 11111  98.6000 100.0000 0001000  90.0000 270.0000 14.20000000123456\n"
+        "BAD B\n"
+        "also not valid\n"
+        "GOOD B\n"
+        "1 22222U 07026A   18135.50000000  .00000010  00000-0  10000-4 0  9991\n"
+        "2 22222  98.6000 100.0000 0001000  90.0000 270.0000 14.20000000123456\n"
+    )
+
+    blocks = parse_tle_blocks(text)
+
+    assert [b[0] for b in blocks] == ["GOOD A", "GOOD B"]
+
+
 @patch("src.ingestion.tle_source.requests.get")
 def test_fetch_tle_group_text_caches_and_avoids_refetching(mock_get, tmp_path):
     mock_get.return_value = _mock_response(SAMPLE_TLE_TEXT)

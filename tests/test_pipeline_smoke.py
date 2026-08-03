@@ -468,6 +468,34 @@ def test_decide_node_critical_decay_gets_no_maneuver_machinery():
     assert decision.awaiting_human_approval is False
 
 
+def test_decide_node_pc_critical_at_large_distance_does_not_crash():
+    """Real bug this closes: a Pc-based CRITICAL conjunction (tight
+    covariance, not proximity - see pc_severity.py) can have a
+    min_distance_km far beyond compute_avoidance_maneuver's own target
+    clearance. Before the fix, this made ManeuverPlan's
+    magnitude_delta_v > 0 validation raise a pydantic.ValidationError
+    straight out of decide_node - this is the exact event shape
+    test_analyze_node_uses_real_pc_when_a_cdm_was_matched already proves
+    analyze_node produces (250km, Pc=2e-3), just carried one step further
+    through decide_node, which is where the crash actually happened."""
+    event = _make_conjunction_event(min_distance_km=250.0)
+    event.raw_data["collision_probability"] = 2e-3
+    finding = _make_finding(Severity.CRITICAL, event)
+    decide_node = make_decide_node(FakeGemmaClient())
+
+    result_state = decide_node({
+        "telemetry": event, "finding": finding, "decision": None, "log_path": None,
+    })
+
+    decision = result_state["decision"]
+    assert decision.action == Action.ABORT
+    assert decision.maneuver_plan is None
+    assert decision.verified_clearance is None
+    assert decision.maneuver_approval is None
+    assert decision.budget_insufficient is False
+    assert decision.awaiting_human_approval is False
+
+
 def _make_attitude_event(pointing_error_deg: float) -> TelemetryEvent:
     """Builds a TelemetryEvent shaped like SyntheticAttitudeAdapter's
     output - single-object (object_id/object_name), no perigee_altitude_km

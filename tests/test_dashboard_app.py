@@ -124,6 +124,39 @@ def test_dashboard_hides_spacetrack_button_when_credentials_unconfigured():
     assert any("SPACETRACK_USERNAME" in c.value for c in at.sidebar.caption)
 
 
+@contextmanager
+def _watched_norad_ids(ids: tuple[str, ...]):
+    """Same object.__setattr__-on-the-shared-singleton pattern as
+    _operator_tokens/_spacetrack_credentials above."""
+    original = settings.watched_norad_ids
+    object.__setattr__(settings, "watched_norad_ids", ids)
+    try:
+        yield
+    finally:
+        object.__setattr__(settings, "watched_norad_ids", original)
+
+
+def test_dashboard_shows_demo_group_notice_when_no_watch_list_configured():
+    with _watched_norad_ids(()):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+    assert any("stations" in i.value and "WATCHED_NORAD_IDS" in i.value for i in at.sidebar.info)
+
+
+def test_dashboard_shows_real_asset_notice_when_watch_list_configured():
+    """Real feature this tests: an operator who's actually configured
+    their own satellite must see that reflected in the UI, not a demo
+    notice that looks identical to the zero-config default - otherwise
+    there's no way to tell at a glance whether the product is watching a
+    real customer asset or CelesTrak's own placeholder."""
+    with _watched_norad_ids(("25544", "48274")):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+    assert any("25544" in s.value and "48274" in s.value for s in at.sidebar.success)
+
+
 def test_dashboard_shows_spacetrack_button_when_credentials_configured():
     # Real network calls are never triggered in this suite - the button's
     # mere presence is what's being checked here, same discipline this

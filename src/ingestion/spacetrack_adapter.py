@@ -35,7 +35,7 @@ from .base_adapter import DataSourceAdapter
 from .cdm_enrichment import enrich_conjunction_events_with_pc
 from .celestrak_adapter import CelesTrakAdapter, DEFAULT_EXCLUDE_WITHIN_GROUP
 from .spacetrack_client import SpaceTrackClient
-from .tle_source import DEFAULT_CACHE_DIR, fetch_spacetrack_group_text
+from .tle_source import DEFAULT_CACHE_DIR, fetch_spacetrack_by_catalog_ids, fetch_spacetrack_group_text
 from ..schemas import TelemetryEvent
 
 # Space-Track has no server-side "named group" concept the way CelesTrak
@@ -66,12 +66,21 @@ class SpaceTrackAdapter(CelesTrakAdapter):
         cache_dir: Path | str = DEFAULT_CACHE_DIR,
         exclude_within_group: Sequence[str] = DEFAULT_EXCLUDE_WITHIN_GROUP,
         run_id: Optional[str] = None,
+        watched_norad_ids: Sequence[str] = (),
     ):
         self._group_name_patterns = dict(group_name_patterns)
 
         def _fetch(group: str, cache_dir: Path) -> str:
             pattern = self._group_name_patterns[group]
             return fetch_spacetrack_group_text(pattern, client, cache_dir, group_slug=group)
+
+        # A real bulk NORAD_CAT_ID query (one real request for the whole
+        # watch list), not CelesTrakAdapter's default per-ID CATNR loop -
+        # Space-Track's GP class genuinely supports this, CelesTrak's
+        # public gp.php doesn't (see fetch_spacetrack_by_catalog_ids's
+        # own docstring).
+        def _fetch_watched(catalog_ids: Sequence[str], cache_dir: Path) -> str:
+            return fetch_spacetrack_by_catalog_ids(catalog_ids, client, cache_dir)
 
         super().__init__(
             groups=list(group_name_patterns.keys()),
@@ -83,6 +92,8 @@ class SpaceTrackAdapter(CelesTrakAdapter):
             exclude_within_group=exclude_within_group,
             run_id=run_id,
             fetch_group_fn=_fetch,
+            watched_norad_ids=watched_norad_ids,
+            fetch_watched_ids_fn=_fetch_watched,
         )
 
 

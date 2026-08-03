@@ -794,3 +794,114 @@ mechanism Docker's own `HEALTHCHECK` invokes, proven both ways against
 a real container rather than only asserted in isolation. Torn down and
 volumes removed afterward, same discipline as every other Docker
 verification in this project.
+
+## Post-Phase-6 improvement — a full QA pass, and 20 real defects fixed
+
+A dedicated QA pass, not incidental to feature work: four parallel deep
+reads covered every file in `src/`, `src/ingestion/`, and the ops/
+dashboard layer against their existing tests, followed by a live pass
+against the real running dashboard, REST API, scheduler, and CLI
+scripts. Found and fixed **20 real defects** (4 fixed first as the highest-
+priority/most-critical items, 16 more across High/Medium/Low severity
+in a second pass), several reproduced live rather than only inferred
+from reading code:
+
+- A Pc-classified CRITICAL conjunction (large distance, tight
+  covariance - the exact scenario Phase 2 exists for) could crash the
+  whole pipeline with an uncaught `pydantic.ValidationError`.
+- The shared TLE parser cascaded one corrupted line into dropping every
+  object after it, not just the bad one.
+- A TOCTOU race let concurrent approve/reject calls silently overwrite
+  each other - reproduced and fixed against a real local Postgres with
+  two racing threads.
+- The webhook alert secret could leak into process logs on a failed
+  send.
+- A real Prometheus cardinality bug (429 responses bypassing route-
+  template labeling) - reproduced live by deliberately rate-limiting
+  against distinct dynamic paths and confirming the raw IDs leaked into
+  label values.
+- CDM enrichment matched a stale Pc onto a fresh, geometrically
+  unrelated conjunction pass (object-pair match only, no TCA proximity
+  check).
+- The delta-v budget tracker silently reset to full on every dashboard
+  button click instead of persisting across a real operator session.
+- Real Space-Track scans were excluded from Trends and the orbit-plot
+  feature (both still hardcoded to `source == "celestrak"` only).
+- A dozen more medium/low-severity gaps across the ingestion layer
+  (Space-Track session re-auth, per-hour throttle, cache-key collision),
+  the API (`/health` bypassing dependency overrides, a bare `POST
+  /review` 422ing instead of working, read endpoints 500ing instead of
+  503ing on a storage blip), and smaller fixes to `gemma_client.py`'s
+  response parsing, `rag.py`'s attitude-entry handling, `preflight.py`'s
+  storage check, and `rate_limit.py`'s bucket eviction.
+
+Every fix got a real regression test (several exercising the actual
+race/failure condition against real infrastructure - real Postgres, a
+real running API, a real Docker healthcheck - not just asserting the
+fix exists). Full suite: 375/375 after both rounds.
+
+## Post-Phase-6 improvement — real satellite watch list (`WATCHED_NORAD_IDS`)
+
+A PM-level gap, not a bug: every screen in this project was locked to
+CelesTrak's/Space-Track's own pre-curated *named groups* (`stations`,
+`cosmos-2251-debris`) - there was no way to monitor a specific real
+satellite by NORAD catalog ID. For nearly any real operator whose
+satellite isn't a crewed station, that meant **no way to point this
+project at their own asset at all** - the single largest gap between
+"a working demo" and "something a real customer could actually use,"
+bigger than any individual bug the QA pass above found.
+
+Closed with `WATCHED_NORAD_IDS` (`src/config.py`) - a comma-separated
+list of a real operator's own NORAD catalog ID(s). Real new fetch
+capability added to `src/ingestion/tle_source.py`:
+`fetch_tle_by_catalog_ids` (CelesTrak's real per-object `CATNR` query -
+no bulk-by-ID endpoint exists, so one real request per watched object)
+and `fetch_spacetrack_by_catalog_ids` (a real Space-Track bulk
+`NORAD_CAT_ID` list query - one real request for the whole watch list,
+a genuine efficiency advantage Space-Track's API provides that
+CelesTrak's doesn't). Wired into `CelesTrakAdapter`/`SpaceTrackAdapter`
+via a new `watched_norad_ids` param and `WATCHED_GROUP_LABEL` - "my
+satellite" is fetched differently but then treated as just another real
+group by the existing cross-group screening algorithm, no special-cased
+logic needed. `DecayRiskAdapter` got the equivalent `catalog_ids` param
+for real per-satellite decay/re-entry screening. Every real entry point
+(dashboard buttons, `scripts/scheduler.py`'s continuous monitoring)
+watches the real configured asset when set, falling back to the
+original demo groups completely unchanged when it isn't.
+
+**A real, live customer walkthrough found a second gap the fix itself
+introduced**, closed in the same pass: with a watch list configured and
+cross-screened against a real, naturally clustered debris field, the
+debris field's own internal pairs are almost always closer to *each
+other* than to an unrelated, well-separated satellite - a live test
+(watching the real ISS, 25544) confirmed the default 5-result fetch
+returned zero mentions of the watched asset at all, 100% debris-vs-
+debris noise. Fixed by excluding debris-vs-debris pairs entirely once a
+watch list is configured - every returned conjunction is guaranteed to
+involve the customer's own asset (multi-satellite fleets still see
+their own mutual conjunctions; only *unrelated* pairs are excluded).
+
+**Live-verified against the real CelesTrak API, not just mocked
+tests:** fetched the real ISS by NORAD ID (25544, no group membership
+involved) via a real `CATNR` query, confirmed it parsed correctly, then
+ran it through the real screening pipeline against the real
+`cosmos-2251-debris` group - correctly labeled `my-assets`, correctly
+cross-screened (a real 11,193 km real conjunction found, ISS vs. real
+Cosmos 2251 debris), and confirmed real decay-risk screening reported
+ISS's real current perigee (~414km, matching this project's own
+earlier live-verified finding). Also live-verified through the real
+dashboard UI end to end with a real `.env` configuration change
+(reverted afterward) - the "Monitoring your own asset(s)" sidebar
+notice, a real fetch, and real logged entries all confirmed working
+together.
+
+23 new tests across `tests/test_tle_source.py`,
+`tests/test_celestrak_adapter.py`, `tests/test_spacetrack_adapter.py`,
+`tests/test_decay_adapter.py`, `tests/test_scheduler.py`,
+`tests/test_dashboard_app.py`, and a new `tests/test_config.py`. Full
+suite: 393/393.
+
+Also closed as part of the same PM pass: the feature was undiscoverable
+without reading source code - a real customer would never have found
+`WATCHED_NORAD_IDS` on their own. Documented in `.env.example` and a new
+README "Point it at your own satellite" setup step.

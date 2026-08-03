@@ -4,7 +4,13 @@ throughout.
 """
 from unittest.mock import MagicMock, patch
 
-from src.ingestion.tle_source import fetch_spacetrack_group_text, fetch_tle_group_text, parse_tle_blocks
+from src.ingestion.tle_source import (
+    fetch_spacetrack_by_catalog_ids,
+    fetch_spacetrack_group_text,
+    fetch_tle_by_catalog_ids,
+    fetch_tle_group_text,
+    parse_tle_blocks,
+)
 
 SAMPLE_TLE_TEXT = """VANGUARD 1
 1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753
@@ -109,6 +115,86 @@ def test_fetch_tle_group_text_different_groups_use_different_cache_files(mock_ge
     assert mock_get.call_count == 2
     assert (tmp_path / "group-a.txt").exists()
     assert (tmp_path / "group-b.txt").exists()
+
+
+ISS_TLE_BLOCK = (
+    "ISS (ZARYA)\n"
+    "1 25544U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998\n"
+    "2 25544  51.6402 181.0633 0004018  88.8954  22.2246 15.54059185113452"
+)
+VANGUARD_TLE_BLOCK = (
+    "VANGUARD 1\n"
+    "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753\n"
+    "2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667"
+)
+
+
+@patch("src.ingestion.tle_source.requests.get")
+def test_fetch_tle_by_catalog_ids_issues_one_real_request_per_id(mock_get, tmp_path):
+    """Real bug this closes if missing: a real satellite operator's own
+    asset almost never happens to be a member of one of CelesTrak's
+    curated named groups - CATNR (per-object query) is the only way
+    CelesTrak's public API can serve a specific customer's own
+    satellite at all."""
+    mock_get.side_effect = [_mock_response(ISS_TLE_BLOCK + "\n"), _mock_response(VANGUARD_TLE_BLOCK + "\n")]
+
+    text = fetch_tle_by_catalog_ids(["25544", "5"], tmp_path)
+
+    assert mock_get.call_count == 2
+    first_url = mock_get.call_args_list[0].args[0]
+    second_url = mock_get.call_args_list[1].args[0]
+    assert "CATNR=25544" in first_url
+    assert "CATNR=5" in second_url
+    blocks = parse_tle_blocks(text)
+    assert {b[0] for b in blocks} == {"ISS (ZARYA)", "VANGUARD 1"}
+
+
+@patch("src.ingestion.tle_source.requests.get")
+def test_fetch_tle_by_catalog_ids_caches_by_content_not_order(mock_get, tmp_path):
+    mock_get.side_effect = [_mock_response(ISS_TLE_BLOCK + "\n"), _mock_response(VANGUARD_TLE_BLOCK + "\n")]
+
+    fetch_tle_by_catalog_ids(["25544", "5"], tmp_path)
+    fetch_tle_by_catalog_ids(["5", "25544"], tmp_path)  # same IDs, different order
+
+    assert mock_get.call_count == 2, "same watch list (regardless of order) must reuse the disk cache"
+
+
+@patch("src.ingestion.tle_source.requests.get")
+def test_fetch_tle_by_catalog_ids_skips_an_unresolvable_id_without_failing(mock_get, tmp_path):
+    """A real, honest degrade: an unknown/decayed/private ID must cost
+    that one object, not the whole watch list."""
+    mock_get.side_effect = [_mock_response("No GP data found\n"), _mock_response(ISS_TLE_BLOCK + "\n")]
+
+    text = fetch_tle_by_catalog_ids(["99999999", "25544"], tmp_path)
+
+    blocks = parse_tle_blocks(text)
+    assert len(blocks) == 1
+    assert blocks[0][0] == "ISS (ZARYA)"
+
+
+def test_fetch_spacetrack_by_catalog_ids_issues_one_real_bulk_query(tmp_path):
+    """Real advantage over CelesTrak's per-ID-only CATNR: Space-Track's
+    GP class genuinely supports a comma-separated NORAD_CAT_ID list in
+    ONE real request."""
+    client = _fake_spacetrack_client(ISS_TLE_BLOCK.replace("ISS (ZARYA)", "0 ISS (ZARYA)") + "\n")
+
+    text = fetch_spacetrack_by_catalog_ids(["25544", "5"], client, tmp_path)
+
+    assert client.query_text.call_count == 1
+    queried_path = client.query_text.call_args.args[0]
+    assert "NORAD_CAT_ID/25544,5" in queried_path
+    assert "DECAY_DATE/null-val" in queried_path
+    assert "EPOCH/%3Enow-30" in queried_path
+    assert parse_tle_blocks(text)[0][0] == "ISS (ZARYA)"
+
+
+def test_fetch_spacetrack_by_catalog_ids_caches_by_content_not_order(tmp_path):
+    client = _fake_spacetrack_client(ISS_TLE_BLOCK.replace("ISS (ZARYA)", "0 ISS (ZARYA)") + "\n")
+
+    fetch_spacetrack_by_catalog_ids(["25544", "5"], client, tmp_path)
+    fetch_spacetrack_by_catalog_ids(["5", "25544"], client, tmp_path)
+
+    assert client.query_text.call_count == 1, "same watch list (regardless of order) must reuse the disk cache"
 
 
 def _fake_spacetrack_client(text):

@@ -280,6 +280,50 @@ def _get_shared_client() -> GemmaClient:
     return st.session_state["gemma_client"]
 
 
+def _watching_own_assets() -> bool:
+    return bool(settings.watched_norad_ids)
+
+
+def _celestrak_screening_kwargs() -> dict:
+    """When a real operator has configured their own asset(s) via
+    WATCHED_NORAD_IDS, every conjunction-screening button below screens
+    those specific real objects instead of CelesTrak's own "stations"
+    placeholder - a customer's own satellite is the actual "asset" side
+    of the question this whole product answers, not a demo stand-in for
+    it. Falls back to CelesTrakAdapter's own defaults (stations vs.
+    cosmos-2251-debris) completely unchanged when nothing's configured,
+    so the existing zero-setup demo experience is untouched."""
+    if not _watching_own_assets():
+        return {}
+    return {"groups": ("cosmos-2251-debris",), "watched_norad_ids": settings.watched_norad_ids}
+
+
+def _spacetrack_screening_kwargs() -> dict:
+    """Same real substitution as _celestrak_screening_kwargs above, for
+    the Space-Track path - a real bulk NORAD_CAT_ID query (see
+    SpaceTrackAdapter/fetch_spacetrack_by_catalog_ids) instead of one
+    request per object."""
+    if not _watching_own_assets():
+        return {}
+    return {
+        "group_name_patterns": {"cosmos-2251-debris": "COSMOS 2251 DEB"},
+        "watched_norad_ids": settings.watched_norad_ids,
+    }
+
+
+def _render_monitoring_status() -> None:
+    if _watching_own_assets():
+        st.sidebar.success(
+            f"🛰️ Monitoring your own asset(s): NORAD ID(s) {', '.join(settings.watched_norad_ids)}"
+        )
+    else:
+        st.sidebar.info(
+            "🛰️ Monitoring CelesTrak's demo 'stations' group (ISS, Tiangong, ...), "
+            "not a specific asset. Set WATCHED_NORAD_IDS in .env to your own "
+            "satellite's NORAD catalog ID to monitor it instead."
+        )
+
+
 def _get_shared_budget_tracker() -> DeltaVBudgetTracker:
     """One DeltaVBudgetTracker per browser session, reused across every
     button click and rerun - the same real bug class this project
@@ -362,12 +406,15 @@ def main() -> None:
         )
 
         st.divider()
+        _render_monitoring_status()
+
+        st.divider()
         st.subheader("Generate live activity")
         fetch_limit = st.number_input("CelesTrak results to fetch", min_value=1, max_value=50, value=5)
         if st.button("Fetch live CelesTrak conjunctions"):
             try:
                 with st.spinner("Screening real CelesTrak data..."):
-                    adapter = CelesTrakAdapter()
+                    adapter = CelesTrakAdapter(**_celestrak_screening_kwargs())
                     run_once(adapter=adapter, client=client, logger=logger, budget_tracker=budget_tracker, limit=fetch_limit)
                     stats = adapter.last_scan_stats
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
@@ -385,7 +432,7 @@ def main() -> None:
                 try:
                     with st.spinner("Screening real Space-Track data + checking for a real CDM match..."):
                         st_client = SpaceTrackClient(settings.spacetrack_username, settings.spacetrack_password)
-                        adapter = EnrichedSpaceTrackAdapter(client=st_client)
+                        adapter = EnrichedSpaceTrackAdapter(client=st_client, **_spacetrack_screening_kwargs())
                         entries = run_once(
                             adapter=adapter, client=client, logger=logger,
                             budget_tracker=budget_tracker, limit=fetch_limit,
@@ -444,7 +491,7 @@ def main() -> None:
             try:
                 with st.spinner("Screening real objects for decay risk..."):
                     run_id = uuid.uuid4().hex[:8]
-                    adapter = DecayRiskAdapter(run_id=run_id)
+                    adapter = DecayRiskAdapter(run_id=run_id, catalog_ids=settings.watched_norad_ids)
                     run_once(adapter=adapter, client=client, logger=logger, limit=5)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't screen for decay risk: {exc}")

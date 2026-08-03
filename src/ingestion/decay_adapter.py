@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from skyfield.api import EarthSatellite, load
 
@@ -25,7 +25,7 @@ from ..decay import assess_decay_risk
 from ..orbital import parse_norad_id, parse_tle_epoch
 from ..schemas import TelemetryEvent
 from .base_adapter import DataSourceAdapter
-from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_group_text, parse_tle_blocks
+from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_by_catalog_ids, fetch_tle_group_text, parse_tle_blocks
 
 # Real fragments from the 2009 Cosmos 2251/Iridium 33 collision - the same
 # real debris field CelesTrakAdapter's default already screens for
@@ -43,10 +43,18 @@ class DecayRiskAdapter(DataSourceAdapter):
         sample_size: int = 200,
         cache_dir: Path | str = DEFAULT_CACHE_DIR,
         run_id: Optional[str] = None,
+        catalog_ids: Sequence[str] = (),
     ):
         self.group = group
         self.sample_size = sample_size
         self.cache_dir = Path(cache_dir)
+        # A real operator's own specific satellite(s), by NORAD catalog
+        # ID (see config.py's WATCHED_NORAD_IDS) - when given, screens
+        # exactly those real objects for decay risk instead of `group`,
+        # the same real capability CelesTrakAdapter's watched_norad_ids
+        # adds for conjunctions ("is MY perigee dropping," not just "is
+        # some perigee in a generic debris field dropping").
+        self.catalog_ids = list(catalog_ids)
         # Same uniqueness reasoning as CelesTrakAdapter/SyntheticCriticalAdapter/
         # HistoricalReplayAdapter - included in every event_id so repeat
         # scans of the same real object don't collide on DecisionLogger's
@@ -55,7 +63,10 @@ class DecayRiskAdapter(DataSourceAdapter):
         self.ts = load.timescale()
 
     def fetch_batch(self, limit: int) -> list[TelemetryEvent]:
-        text = fetch_tle_group_text(self.group, self.cache_dir)
+        if self.catalog_ids:
+            text = fetch_tle_by_catalog_ids(self.catalog_ids, self.cache_dir)
+        else:
+            text = fetch_tle_group_text(self.group, self.cache_dir)
         blocks = parse_tle_blocks(text)[: self.sample_size]
 
         start_time = datetime.now(timezone.utc)

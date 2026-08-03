@@ -62,11 +62,22 @@ CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
 def default_adapters() -> list[DataSourceAdapter]:
     """The real hazard screens run every tick: real cross-group
     conjunctions and real decay risk, the same two data sources
-    scripts/dashboard.py's sidebar buttons already expose. A fresh
-    instance per tick is correct here (unlike GemmaClient/the budget
-    tracker) - each adapter's own run_id-per-instance scheme (see
-    celestrak_adapter.py) is what keeps event_ids unique across separate
-    ticks in the first place."""
+    scripts/dashboard.py's sidebar buttons already expose. When a real
+    operator has configured their own asset(s) via WATCHED_NORAD_IDS,
+    both screens watch those specific real objects instead of
+    CelesTrak's own "stations" placeholder - unattended, continuous
+    monitoring of a customer's actual satellite is the whole point of
+    running this scheduler at all, not a demo stand-in for it (mirrors
+    scripts/dashboard.py's identical substitution for the interactive
+    path). A fresh instance per tick is correct here (unlike
+    GemmaClient/the budget tracker) - each adapter's own run_id-per-
+    instance scheme (see celestrak_adapter.py) is what keeps event_ids
+    unique across separate ticks in the first place."""
+    if settings.watched_norad_ids:
+        return [
+            CelesTrakAdapter(groups=("cosmos-2251-debris",), watched_norad_ids=settings.watched_norad_ids),
+            DecayRiskAdapter(catalog_ids=settings.watched_norad_ids),
+        ]
     return [CelesTrakAdapter(), DecayRiskAdapter()]
 
 # Space-Track's real CDMs refresh roughly every 8 hours (see

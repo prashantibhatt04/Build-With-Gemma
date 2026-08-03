@@ -225,6 +225,19 @@ never paste a real key into a terminal you're recording. This project's
 own code never prints the raw key anywhere — the only way it leaks is if
 someone does so manually.
 
+### 3. Point it at your own satellite (optional)
+
+Every screen defaults to CelesTrak's own demo groups — real objects, but
+not *your* asset (`stations`, the crewed-stations group, is the closest
+stand-in). If you operate a real satellite, set `WATCHED_NORAD_IDS` in
+`.env` to its NORAD catalog ID (comma-separated for more than one, e.g.
+`WATCHED_NORAD_IDS=25544,48274`) to monitor it specifically — every
+conjunction/decay screen (dashboard buttons, `scripts/scheduler.py`) then
+watches those exact objects, cross-screened against the real debris
+field, instead of the demo placeholder. The dashboard sidebar shows which
+mode is active ("Monitoring your own asset(s)" vs. the demo-group
+notice). Leave unset to keep using the zero-setup demo groups.
+
 ## Run the demo
 
 ```bash
@@ -261,7 +274,9 @@ one event or one instant. Sidebar buttons can generate real new activity
 (a live CelesTrak conjunction scan, a real decay/re-entry risk screen,
 the synthetic CRITICAL scenario, the synthetic attitude/pointing-loss
 scenario, or a historical replay) without leaving the browser. Opens at
-`http://localhost:8501` by default.
+`http://localhost:8501` by default. A sidebar notice shows whether it's
+watching your own configured asset (`WATCHED_NORAD_IDS` — see Setup
+above) or CelesTrak's demo `stations` group.
 
 ## Run the REST API (programmatic access)
 
@@ -313,7 +328,10 @@ alert) if it fails several ticks in a row — see
 whichever `DecisionLogger` backend is configured (JSONL files by
 default, or a real Postgres database via `DATABASE_URL` — JSONL's
 whole-file rewrites aren't safe under the concurrent writes a scheduler
-running alongside a dashboard/CLI operator would produce).
+running alongside a dashboard/CLI operator would produce). Watches your
+own `WATCHED_NORAD_IDS` (see Setup above) when configured — this is the
+real, unattended, 24/7 form of "protect my satellite," not just the
+interactive dashboard buttons.
 
 ## Production deployment (Docker)
 

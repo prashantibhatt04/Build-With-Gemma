@@ -231,3 +231,101 @@ def test_fetch_batch_excludes_pairs_within_an_excluded_group(mock_get, tmp_path)
     for e in events:
         pair_groups = {e.raw_data["object_a_group"], e.raw_data["object_b_group"]}
         assert pair_groups != {"test-group"}, "a within-excluded-group pair leaked through"
+
+
+WATCHED_TLE_TEXT = """TEST SAT A
+1 30001U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30001  51.6402 175.0000 0004018  88.8954 100.0000 15.54059185113452
+"""
+
+
+def test_watched_norad_ids_are_screened_under_a_dedicated_group_label(tmp_path):
+    """Real feature this tests: a customer's own asset(s), given by
+    NORAD catalog ID rather than a curated group name, is what actually
+    lets this project screen a real satellite that isn't a member of any
+    CelesTrak-curated group. "my satellite" isn't a special case for the
+    cross-group screening algorithm below - it's fetched differently
+    (fetch_watched_ids_fn, injected here) but then treated exactly like
+    any other real group (WATCHED_GROUP_LABEL)."""
+    def fake_fetch_group(group, cache_dir):
+        return OTHER_GROUP_TLE_TEXT
+
+    def fake_fetch_watched(catalog_ids, cache_dir):
+        assert list(catalog_ids) == ["30001"]
+        return WATCHED_TLE_TEXT
+
+    adapter = CelesTrakAdapter(
+        groups=["debris"], watched_norad_ids=["30001"],
+        fetch_group_fn=fake_fetch_group, fetch_watched_ids_fn=fake_fetch_watched,
+        sample_size_per_group=10, cache_dir=tmp_path,
+    )
+
+    events = adapter.fetch_batch(limit=10)
+
+    assert len(events) > 0
+    groups_seen = set()
+    for e in events:
+        groups_seen.add(e.raw_data["object_a_group"])
+        groups_seen.add(e.raw_data["object_b_group"])
+    assert "my-assets" in groups_seen
+    assert "my-assets" in adapter.last_scan_stats["groups"]
+
+
+WELL_SEPARATED_WATCHED_ASSET_TLE_TEXT = """MY SATELLITE
+1 30006U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30006  51.6402 130.0000 0004018  88.8954 400.0000 15.54059185113452
+"""
+
+
+def test_watched_norad_ids_excludes_debris_vs_debris_noise(tmp_path):
+    """Real bug this closes, found by a live customer walkthrough: a
+    dense debris field's own internal pairs (SAMPLE_TLE_TEXT's 3 objects
+    are deliberately close to EACH OTHER - see this file's module
+    docstring) are almost always closer than an unrelated, well-
+    separated real satellite is to any of them. Without filtering,
+    clicking "fetch conjunctions" with a real watch list configured
+    could return a result set that's 100% debris-vs-debris noise, never
+    once mentioning the customer's own configured asset - the entire
+    point of having configured it in the first place."""
+    def fake_fetch_group(group, cache_dir):
+        return SAMPLE_TLE_TEXT  # 3 objects, close to EACH OTHER
+
+    def fake_fetch_watched(catalog_ids, cache_dir):
+        return WELL_SEPARATED_WATCHED_ASSET_TLE_TEXT  # 1 real, separated asset
+
+    adapter = CelesTrakAdapter(
+        groups=["debris"], watched_norad_ids=["30006"],
+        fetch_group_fn=fake_fetch_group, fetch_watched_ids_fn=fake_fetch_watched,
+        sample_size_per_group=10, cache_dir=tmp_path,
+    )
+
+    events = adapter.fetch_batch(limit=10)
+
+    assert len(events) > 0
+    for e in events:
+        assert "my-assets" in (e.raw_data["object_a_group"], e.raw_data["object_b_group"]), \
+            "a debris-vs-debris pair leaked through despite a watch list being configured"
+
+
+def test_fetch_watched_ids_fn_is_never_called_when_watch_list_is_empty(tmp_path):
+    """The default, zero-config path (no WATCHED_NORAD_IDS configured)
+    must be completely unaffected - no extra real request, no
+    "my-assets" group appearing anywhere."""
+    watched_fetch_calls = []
+
+    def fake_fetch_group(group, cache_dir):
+        return SAMPLE_TLE_TEXT
+
+    def fake_fetch_watched(catalog_ids, cache_dir):
+        watched_fetch_calls.append(catalog_ids)
+        return ""
+
+    adapter = CelesTrakAdapter(
+        groups=["test-group"], sample_size_per_group=10, cache_dir=tmp_path,
+        fetch_group_fn=fake_fetch_group, fetch_watched_ids_fn=fake_fetch_watched,
+    )
+
+    adapter.fetch_batch(limit=10)
+
+    assert watched_fetch_calls == []
+    assert "my-assets" not in adapter.last_scan_stats["groups"]

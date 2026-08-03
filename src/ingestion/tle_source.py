@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 import time
 
 import requests
@@ -42,6 +42,106 @@ def fetch_tle_group_text(group: str, cache_dir: Path) -> str:
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(text)
     return text
+
+
+def _catalog_ids_cache_key(catalog_ids: Sequence[str]) -> str:
+    """A stable key from LIST CONTENT, not order - two watch-list calls
+    with the same IDs in a different order must hit the same cache
+    entry, not silently miss and refetch."""
+    sorted_ids = sorted(str(i) for i in catalog_ids)
+    return hashlib.sha256(",".join(sorted_ids).encode("utf-8")).hexdigest()[:10]
+
+
+def fetch_tle_by_catalog_ids(catalog_ids: Sequence[str], cache_dir: Path) -> str:
+    """Fetches (or reuses a disk-cached copy of) real TLE text for a
+    specific, caller-provided list of NORAD catalog IDs - a real
+    satellite operator's own asset(s), the capability
+    fetch_tle_group_text structurally can't provide: CelesTrak's curated
+    groups are fixed named lists (e.g. "stations"), with no way to ask
+    for "my specific satellite" unless it happens to already be a member
+    of one. This is what actually lets this project screen a real
+    customer's own object against a real debris field or another group,
+    rather than only ever screening CelesTrak's own pre-picked "stations"
+    as the stand-in asset.
+
+    CelesTrak's public gp.php has a real per-object query parameter
+    (CATNR) but no bulk-by-ID equivalent, so this issues one real
+    request per ID - cached as a single combined file keyed by the
+    watch list's content (see _catalog_ids_cache_key), not one cache
+    file per object, so a repeat call with the same watch list doesn't
+    refetch every object individually.
+
+    An unknown, decayed, or otherwise unresolvable ID degrades honestly:
+    CelesTrak returns a real "No GP data found" response (not
+    TLE-shaped) for those, which is skipped rather than corrupting the
+    combined text - the watch list ends up with one fewer object, not a
+    crash, matching this project's existing "degrade, don't fail"
+    pattern for every other optional/partial data source.
+    """
+    cache_key = _catalog_ids_cache_key(catalog_ids)
+    cache_path = cache_dir / f"catnr-{cache_key}.txt"
+    if cache_path.exists():
+        age_seconds = time.time() - cache_path.stat().st_mtime
+        if age_seconds < CACHE_MAX_AGE_SECONDS:
+            return cache_path.read_text()
+
+    blocks = []
+    for catalog_id in catalog_ids:
+        url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={catalog_id}&FORMAT=tle"
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        block = response.text.strip()
+        if block and "no gp data found" not in block.lower():
+            blocks.append(block)
+
+    text = "\n".join(blocks) + ("\n" if blocks else "")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(text)
+    return text
+
+
+def _run_spacetrack_query_and_cache(query_path: str, cache_path: Path, client: "SpaceTrackClient") -> str:
+    """Shared real-query-plus-cache logic behind both
+    fetch_spacetrack_group_text and fetch_spacetrack_by_catalog_ids -
+    the only difference between the two is how query_path/cache_path get
+    built (a name-pattern filter vs. an explicit ID list), not how the
+    real request/response/cache/3LE-name-stripping is handled."""
+    if cache_path.exists():
+        age_seconds = time.time() - cache_path.stat().st_mtime
+        if age_seconds < CACHE_MAX_AGE_SECONDS:
+            return cache_path.read_text()
+
+    raw_text = client.query_text(query_path)
+    text = "\n".join(
+        line[2:] if line.startswith("0 ") else line
+        for line in raw_text.splitlines()
+    ) + "\n"
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(text)
+    return text
+
+
+def fetch_spacetrack_by_catalog_ids(
+    catalog_ids: Sequence[str], client: "SpaceTrackClient", cache_dir: Path,
+) -> str:
+    """Space-Track equivalent of fetch_tle_by_catalog_ids above, but a
+    single real bulk query - Space-Track's GP class accepts a real
+    comma-separated NORAD_CAT_ID list in one request, a genuine
+    efficiency advantage over CelesTrak's public gp.php, which has no
+    bulk-by-ID equivalent at all. Same DECAY_DATE/EPOCH staleness
+    filters as fetch_spacetrack_group_text, for the identical real
+    reason documented there - an unfiltered query can return decades-
+    stale historical elsets that silently propagate to NaN.
+    """
+    cache_key = _catalog_ids_cache_key(catalog_ids)
+    cache_path = cache_dir / f"spacetrack-catnr-{cache_key}.txt"
+    ids_param = ",".join(str(catalog_id) for catalog_id in catalog_ids)
+    query_path = (
+        f"class/gp/NORAD_CAT_ID/{ids_param}/DECAY_DATE/null-val/"
+        f"EPOCH/%3Enow-30/orderby/NORAD_CAT_ID/format/3le"
+    )
+    return _run_spacetrack_query_and_cache(query_path, cache_path, client)
 
 
 def fetch_spacetrack_group_text(
@@ -102,24 +202,11 @@ def fetch_spacetrack_group_text(
     """
     pattern_hash = hashlib.sha256(name_pattern.encode("utf-8")).hexdigest()[:10]
     cache_path = cache_dir / f"spacetrack-{group_slug}-{pattern_hash}.txt"
-    if cache_path.exists():
-        age_seconds = time.time() - cache_path.stat().st_mtime
-        if age_seconds < CACHE_MAX_AGE_SECONDS:
-            return cache_path.read_text()
-
     query_path = (
         f"class/gp/OBJECT_NAME/~~{name_pattern}/DECAY_DATE/null-val/"
         f"EPOCH/%3Enow-30/orderby/NORAD_CAT_ID/format/3le"
     )
-    raw_text = client.query_text(query_path)
-    text = "\n".join(
-        line[2:] if line.startswith("0 ") else line
-        for line in raw_text.splitlines()
-    ) + "\n"
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(text)
-    return text
+    return _run_spacetrack_query_and_cache(query_path, cache_path, client)
 
 
 def parse_tle_blocks(text: str) -> list[tuple[str, str, str]]:

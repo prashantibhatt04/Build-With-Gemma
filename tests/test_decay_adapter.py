@@ -78,3 +78,23 @@ def test_fetch_batch_respects_explicit_run_id(mock_get, tmp_path):
     events = adapter.fetch_batch(limit=2)
 
     assert all(e.event_id.endswith("-fixed-id") for e in events)
+
+
+@patch("src.ingestion.tle_source.requests.get")
+def test_catalog_ids_screens_the_watch_list_instead_of_group(mock_get, tmp_path):
+    """Real feature this tests: a customer's own satellite (by NORAD ID)
+    can be screened for decay risk directly - "is MY perigee dropping,"
+    not just some generic debris-field object's perigee."""
+    iss_only = """ISS (ZARYA)
+1 25544U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 25544  51.6402 181.0633 0004018  88.8954  22.2246 15.54059185113452
+"""
+    mock_get.return_value = _mock_response(iss_only)
+    adapter = DecayRiskAdapter(catalog_ids=["25544"], cache_dir=tmp_path)
+
+    events = adapter.fetch_batch(limit=10)
+
+    assert len(events) == 1
+    assert events[0].raw_data["object_id"] == "25544"
+    queried_url = mock_get.call_args.args[0]
+    assert "CATNR=25544" in queried_url

@@ -72,6 +72,21 @@ class Settings:
     # this project, a baseline protection shouldn't require opting in). 0
     # disables it entirely, e.g. for local dev convenience.
     api_rate_limit_per_minute: int = 120
+    # A real operator's own asset(s), by NORAD catalog ID - "25544,48274".
+    # Empty (the default) keeps every existing demo/screening button
+    # pointed at CelesTrak's own curated "stations" group, exactly as
+    # before this setting existed. This is what actually lets a real
+    # customer point this project at THEIR satellite: without it, there
+    # was no way to screen anything but CelesTrak's own pre-picked group
+    # as the "asset" side of a conjunction, which for nearly every real
+    # satellite that isn't a crewed station means no way to monitor it at
+    # all (see CelesTrakAdapter/SpaceTrackAdapter's watched_norad_ids
+    # param, and ROADMAP_TO_PRODUCT.md).
+    watched_norad_ids: tuple[str, ...] = ()
+
+
+def _parse_watched_norad_ids(raw: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 def load_settings() -> Settings:
@@ -95,6 +110,7 @@ def load_settings() -> Settings:
         database_url=os.getenv("DATABASE_URL", ""),
         operator_tokens=parse_operator_tokens(os.getenv("OPERATOR_TOKENS", "")),
         api_rate_limit_per_minute=int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "120")),
+        watched_norad_ids=_parse_watched_norad_ids(os.getenv("WATCHED_NORAD_IDS", "")),
     )
 
 

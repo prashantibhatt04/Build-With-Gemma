@@ -13,7 +13,7 @@ from ..catalog_screening import apogee_perigee_overlap_pairs
 from ..orbital import build_coarse_times, coarse_min_distance, compute_coarse_positions, parse_norad_id, parse_tle_epoch, perigee_apogee_altitude_km, refine_closest_approach
 from ..schemas import TelemetryEvent
 from .base_adapter import DataSourceAdapter
-from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_group_text, parse_tle_blocks
+from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_by_catalog_ids, fetch_tle_group_text, parse_tle_blocks
 
 # Two real, meaningfully different CelesTrak groups by default: crewed
 # stations (the asset actually worth protecting) and a real debris field
@@ -36,6 +36,15 @@ DEFAULT_GROUPS = ("stations", "cosmos-2251-debris")
 # real debris) and within-debris-group pairs are unaffected and still
 # fully screened - debris fragments are genuinely dispersed, not docked.
 DEFAULT_EXCLUDE_WITHIN_GROUP = ("stations",)
+
+# Synthetic group label for a caller's own watched NORAD ID list (see
+# watched_norad_ids below - a real operator's own specific satellite(s),
+# not one of CelesTrak's/Space-Track's pre-curated named groups). Real
+# objects, fetched by explicit ID rather than a group name, but otherwise
+# just another group as far as the cross-group screening/
+# exclude-within-group logic below is concerned - "my satellite" doesn't
+# need its own special-cased algorithm, just its own real fetch path.
+WATCHED_GROUP_LABEL = "my-assets"
 
 COARSE_STEP_MINUTES = 5
 FINE_STEP_SECONDS = 10
@@ -111,6 +120,8 @@ class CelesTrakAdapter(DataSourceAdapter):
         run_id: Optional[str] = None,
         fetch_group_fn: Callable[[str, Path], str] = fetch_tle_group_text,
         ap_filter_margin_km: float = 0.0,
+        watched_norad_ids: Sequence[str] = (),
+        fetch_watched_ids_fn: Callable[[Sequence[str], Path], str] = fetch_tle_by_catalog_ids,
     ):
         self.groups = list(groups)
         # See catalog_screening.apogee_perigee_overlap_pairs's own
@@ -123,6 +134,19 @@ class CelesTrakAdapter(DataSourceAdapter):
         # entire ranking/screening algorithm below is otherwise identical
         # and shared, not duplicated, between both real data sources.
         self.fetch_group_fn = fetch_group_fn
+        # A real operator's own specific satellite(s), by NORAD catalog
+        # ID (see config.py's WATCHED_NORAD_IDS) - this is what actually
+        # lets this project screen a real customer's own asset instead of
+        # only ever CelesTrak's/Space-Track's own pre-curated groups.
+        # Fetched separately from `groups` (real per-ID CATNR queries by
+        # default; SpaceTrackAdapter overrides fetch_watched_ids_fn with
+        # a real bulk NORAD_CAT_ID query instead) and folded into the
+        # same screening pool under WATCHED_GROUP_LABEL, so every
+        # downstream mechanism (cross-group refinement,
+        # exclude_within_group, event logging) treats "my satellite" as
+        # just another group, not a special case.
+        self.watched_norad_ids = list(watched_norad_ids)
+        self.fetch_watched_ids_fn = fetch_watched_ids_fn
         self.sample_size_per_group = sample_size_per_group
         self.refine_top_k = refine_top_k
         self.min_cross_group_refine = min_cross_group_refine
@@ -148,12 +172,20 @@ class CelesTrakAdapter(DataSourceAdapter):
 
     def _fetch_sample(self) -> list[tuple[str, str, str, str]]:
         """Returns (name, tle_line1, tle_line2, source_group) for up to
-        sample_size_per_group real objects from each configured group."""
+        sample_size_per_group real objects from each configured group,
+        plus every real object in watched_norad_ids (if any) under
+        WATCHED_GROUP_LABEL - not capped by sample_size_per_group, since
+        a caller's own explicit watch list was asked for by name, not
+        sampled from a larger curated group."""
         sample = []
         for group in self.groups:
             text = self.fetch_group_fn(group, self.cache_dir)
             group_sample = parse_tle_blocks(text)[: self.sample_size_per_group]
             sample.extend((name, l1, l2, group) for name, l1, l2 in group_sample)
+        if self.watched_norad_ids:
+            text = self.fetch_watched_ids_fn(self.watched_norad_ids, self.cache_dir)
+            watched_sample = parse_tle_blocks(text)
+            sample.extend((name, l1, l2, WATCHED_GROUP_LABEL) for name, l1, l2 in watched_sample)
         return sample
 
     def _rank_conjunctions(self) -> list[dict]:
@@ -187,6 +219,20 @@ class CelesTrakAdapter(DataSourceAdapter):
             # see DEFAULT_EXCLUDE_WITHIN_GROUP) before they ever cost
             # coarse-ranking or refinement effort.
             if not (source_groups[i] == source_groups[j] and source_groups[i] in self.exclude_within_group)
+            # When a real operator has configured their own asset(s)
+            # (watched_norad_ids), only pairs actually involving that
+            # asset are screened at all - a real customer walkthrough
+            # found the gap the hard way: a dense debris field's own
+            # internal pairs are almost always closer to EACH OTHER than
+            # to an unrelated, well-separated real satellite, so without
+            # this filter the default result set (limited to a handful
+            # of closest pairs) could be 100% debris-vs-debris noise,
+            # never once mentioning the customer's own configured asset.
+            # Watched-vs-watched pairs (a real small fleet's own mutual
+            # conjunctions) are still included - only debris-vs-debris
+            # is filtered out, since that's the pairing a customer who
+            # configured a specific watch list didn't ask to hear about.
+            and (not self.watched_norad_ids or WATCHED_GROUP_LABEL in (source_groups[i], source_groups[j]))
         ]
         pairs_by_coarse_distance = sorted(
             (
@@ -241,7 +287,7 @@ class CelesTrakAdapter(DataSourceAdapter):
 
         conjunctions.sort(key=lambda c: c["min_distance_km"])
         self.last_scan_stats = {
-            "groups": list(self.groups),
+            "groups": list(self.groups) + ([WATCHED_GROUP_LABEL] if self.watched_norad_ids else []),
             "total_objects": len(satellites),
             # Every pair that WOULD have been screened pre-Phase-3 (plain
             # itertools.combinations) - kept for direct before/after

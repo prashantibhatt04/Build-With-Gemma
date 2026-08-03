@@ -98,6 +98,29 @@ def test_default_adapters_returns_the_real_conjunction_and_decay_sources():
     assert len(adapters) == 2
     assert isinstance(adapters[0], CelesTrakAdapter)
     assert isinstance(adapters[1], DecayRiskAdapter)
+    assert adapters[0].watched_norad_ids == []
+
+
+def test_default_adapters_watches_the_real_configured_asset_when_set(monkeypatch):
+    """Real feature this tests: continuous unattended monitoring - the
+    whole point of running this scheduler at all - must watch a real
+    operator's own configured satellite when WATCHED_NORAD_IDS is set,
+    not always fall back to CelesTrak's "stations" demo placeholder."""
+    import scripts.scheduler as scheduler_module
+
+    watching_settings = Settings(
+        gemma_backend="ollama", gemma_model="gemma4:e4b", ollama_host="http://localhost:11434",
+        gemma_api_key="", gemma_model_api="gemma-4-26b-a4b-it", log_dir="./logs",
+        delta_v_budget_m_s=5.0, watched_norad_ids=("25544",),
+    )
+    monkeypatch.setattr(scheduler_module, "settings", watching_settings)
+
+    adapters = scheduler_module.default_adapters()
+
+    assert len(adapters) == 2
+    assert adapters[0].watched_norad_ids == ["25544"]
+    assert adapters[0].groups == ["cosmos-2251-debris"]
+    assert adapters[1].catalog_ids == ["25544"]
 
 
 def test_update_consecutive_failures_resets_to_zero_on_success():

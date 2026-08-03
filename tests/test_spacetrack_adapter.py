@@ -136,3 +136,39 @@ def test_enriched_adapter_exposes_the_underlying_scan_stats(tmp_path):
 
     assert adapter.last_scan_stats is not None
     assert adapter.last_scan_stats["groups"] == ["stations", "cosmos-2251-debris"]
+
+
+MY_ASSET_TLE_TEXT = """MY SATELLITE
+1 40001U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 40001  51.6402 170.0000 0004018  88.8954  75.0000 15.54059185113452
+"""
+
+
+def test_watched_norad_ids_use_a_real_bulk_query_not_the_celestrak_per_id_fetch(tmp_path):
+    """Real feature this tests: SpaceTrackAdapter must use its own
+    real bulk NORAD_CAT_ID query (fetch_spacetrack_by_catalog_ids) for a
+    caller's watch list, not CelesTrakAdapter's default per-ID CATNR
+    loop - the whole point of overriding fetch_watched_ids_fn."""
+    client = _fake_client()
+
+    def _query_text(path):
+        if "NORAD_CAT_ID/40001" in path:
+            return MY_ASSET_TLE_TEXT.replace("MY SATELLITE", "0 MY SATELLITE")
+        return DEBRIS_TLE_TEXT
+
+    client.query_text.side_effect = _query_text
+    adapter = SpaceTrackAdapter(
+        client=client, group_name_patterns={"cosmos-2251-debris": "COSMOS 2251 DEB"},
+        exclude_within_group=(), watched_norad_ids=["40001"], cache_dir=tmp_path,
+    )
+
+    events = adapter.fetch_batch(limit=10)
+
+    assert len(events) > 0
+    groups_seen = set()
+    for e in events:
+        groups_seen.add(e.raw_data["object_a_group"])
+        groups_seen.add(e.raw_data["object_b_group"])
+    assert "my-assets" in groups_seen
+    queried_paths = [call.args[0] for call in client.query_text.call_args_list]
+    assert any("NORAD_CAT_ID/40001" in p for p in queried_paths), "expected one real bulk NORAD_CAT_ID query"

@@ -52,6 +52,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel
+from starlette.routing import Match
 
 from src.auth import authenticate
 from src.config import settings
@@ -109,20 +110,37 @@ async def _rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
+def _route_template_for(request: Request) -> str:
+    """Resolves the matched route TEMPLATE (e.g. "/decisions/{event_id}"),
+    never the raw resolved path - baking a real event_id into a metric's
+    label value would produce unbounded real label cardinality in a real
+    Prometheus deployment (a new label value, forever retained, for every
+    distinct id anyone ever queried).
+
+    Matches directly against request.app.routes rather than reading
+    request.scope["route"] - that key is only set once Starlette's own
+    router actually runs, which a middleware wrapping the router (like
+    _rate_limit below) can short-circuit before it ever does, e.g.
+    returning a 429 for a real, distinct path like
+    "/decisions/some-real-id". Matching here works the same whether or
+    not routing already happened, so every response gets a real bounded
+    template label - falling back to the raw path only for a genuinely
+    unmapped path (Starlette's own 404), which is itself a bounded,
+    finite set of real routes this app defines."""
+    for route in request.app.routes:
+        match, _ = route.matches(request.scope)
+        if match == Match.FULL:
+            return route.path
+    return request.url.path
+
+
 @app.middleware("http")
 async def _count_requests(request: Request, call_next):
     """A real, monotonically increasing process counter - see
     src/metrics.py's module docstring for why this is a Counter and not
-    part of the audit-log-derived Collector below. Labeled by the matched
-    ROUTE TEMPLATE (e.g. "/decisions/{event_id}"), read from
-    request.scope AFTER routing has resolved it - never the raw resolved
-    path, which would bake a real event_id into the metric's label value
-    and produce unbounded real label cardinality in a real Prometheus
-    deployment (a new label value, forever retained, for every distinct
-    id anyone ever queried)."""
+    part of the audit-log-derived Collector below."""
     response = await call_next(request)
-    route = request.scope.get("route")
-    route_template = route.path if route is not None else request.url.path
+    route_template = _route_template_for(request)
     http_requests_total.labels(method=request.method, route=route_template, status=str(response.status_code)).inc()
     return response
 
@@ -211,6 +229,19 @@ def require_operator(authorization: Optional[str] = Header(None)) -> str:
     return operator
 
 
+def _call_storage_or_503(fn, *args, **kwargs):
+    """Every real storage call in this module goes through this, so a
+    transient backend blip (a Postgres restart - realistic under
+    docker-compose's own `restart: unless-stopped` topology) surfaces as
+    the same clean, typed 503 /health already gives, on every endpoint -
+    not a bare unhandled 500 with no signal a programmatic caller can act
+    on for four out of five real storage-reading routes."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"storage unreachable: {exc}") from exc
+
+
 def _raise_for_logger_value_error(exc: ValueError) -> None:
     """DecisionLogger.approve_maneuver/mark_reviewed raise a plain
     ValueError for two real, distinct situations - a programmatic caller
@@ -240,11 +271,15 @@ class ReviewRequest(BaseModel):
 
 
 @app.get("/health")
-def health():
+def health(logger: DecisionLogger = Depends(get_logger)):
     """No auth required - a load balancer/orchestrator health probe
     shouldn't need a credential. Actually touches storage (not just
-    "the process is up") - a real, if cheap, liveness check."""
-    logger = get_logger()
+    "the process is up") - a real, if cheap, liveness check. Takes
+    logger via Depends like every other route (rather than calling
+    get_logger() directly in the body) specifically so
+    app.dependency_overrides[get_logger] - the exact mechanism every
+    test uses to point at an isolated store - actually applies here too;
+    calling it directly silently bypassed that."""
     try:
         logger.load_all_entries()
     except Exception as exc:
@@ -262,7 +297,7 @@ def list_decisions(
     operator: Optional[str] = Depends(optional_operator),
     logger: DecisionLogger = Depends(get_logger),
 ):
-    entries = logger.load_all_entries()
+    entries = _call_storage_or_503(logger.load_all_entries)
     if severity is not None:
         entries = [e for e in entries if e.finding.severity.value == severity]
     if source is not None:
@@ -274,14 +309,14 @@ def list_decisions(
 def list_pending_approvals(
     operator: Optional[str] = Depends(optional_operator), logger: DecisionLogger = Depends(get_logger),
 ):
-    return pending_approvals(logger.load_all_entries())
+    return pending_approvals(_call_storage_or_503(logger.load_all_entries))
 
 
 @app.get("/decisions/{event_id}", response_model=DecisionLogEntry)
 def get_decision(
     event_id: str, operator: Optional[str] = Depends(optional_operator), logger: DecisionLogger = Depends(get_logger),
 ):
-    entry = logger.find_entry(event_id)
+    entry = _call_storage_or_503(logger.find_entry, event_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No logged decision found with event_id={event_id!r}")
     return entry
@@ -295,7 +330,7 @@ def get_stats_summary(
     metrics row shows. Was originally served at /metrics; moved here once
     /metrics became real Prometheus exposition text (the conventional path
     scrapers expect), so the two don't collide."""
-    return compute_metrics(logger.load_all_entries())
+    return compute_metrics(_call_storage_or_503(logger.load_all_entries))
 
 
 @app.get("/metrics")
@@ -333,7 +368,13 @@ def reject_decision(
 @app.post("/decisions/{event_id}/review", response_model=DecisionLogEntry)
 def review_decision(
     event_id: str,
-    body: ReviewRequest,
+    # A default, not a bare required `body: ReviewRequest` - every field
+    # on ReviewRequest is itself optional (reviewed_by falls back to the
+    # authenticated operator), but without a default here FastAPI still
+    # required a JSON body to be present on the wire at all, so a bare
+    # `POST .../review` with just an Authorization header 422'd instead
+    # of working as documented.
+    body: ReviewRequest = ReviewRequest(),
     operator: str = Depends(require_operator),
     logger: DecisionLogger = Depends(get_logger),
 ):

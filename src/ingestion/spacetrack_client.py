@@ -29,6 +29,8 @@ for when real-session verification actually happens.
 from __future__ import annotations
 
 import time
+from collections import deque
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
@@ -40,13 +42,18 @@ BASE_QUERY_URL = "https://www.space-track.org/basicspacedata/query"
 # requests per 1 minute(s) and 300 requests per 1 hour(s)" (confirmed
 # directly against their published API documentation). Throttling to one
 # request every 3 seconds keeps every real call comfortably under the
-# per-minute limit without needing to track a rolling window - repeated
-# account-suspension risk from a naive retry loop is exactly the kind of
-# real-world failure mode this project's own GemmaClient circuit breaker
-# was built to avoid for Gemma calls; the fix here is simpler (Space-Track
-# has no equivalent to Gemma's "try anyway, might work" fallback backend)
-# so a flat minimum interval is sufficient.
+# per-minute limit - repeated account-suspension risk from a naive retry
+# loop is exactly the kind of real-world failure mode this project's own
+# GemmaClient circuit breaker was built to avoid for Gemma calls; the fix
+# here is simpler (Space-Track has no equivalent to Gemma's "try anyway,
+# might work" fallback backend) so a flat minimum interval is sufficient
+# for the per-minute half of the limit. The per-hour half needs its own,
+# separate rolling-window check below (MAX_REQUESTS_PER_HOUR) - a flat
+# 3-second interval alone permits ~1200 requests/hour if sustained, 4x
+# over the documented per-hour cap.
 MIN_SECONDS_BETWEEN_REQUESTS = 3.0
+MAX_REQUESTS_PER_HOUR = 300
+ONE_HOUR_S = 60 * 60
 
 
 class SpaceTrackAuthError(Exception):
@@ -75,6 +82,9 @@ class SpaceTrackClient:
         self.password = password
         self._session: Optional[requests.Session] = None
         self._last_request_time: float = 0.0
+        # Timestamps (time.monotonic()) of every real request within the
+        # last rolling hour - see _throttle's per-hour check below.
+        self._request_times: deque[float] = deque()
 
     def _authenticate(self) -> requests.Session:
         session = requests.Session()
@@ -102,6 +112,20 @@ class SpaceTrackClient:
         if elapsed < MIN_SECONDS_BETWEEN_REQUESTS:
             time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - elapsed)
 
+        # Real per-hour cap - MIN_SECONDS_BETWEEN_REQUESTS above only
+        # bounds the per-minute rate. Prunes request timestamps older
+        # than an hour, then sleeps until the oldest one ages out if
+        # already at MAX_REQUESTS_PER_HOUR, rather than letting a
+        # sustained cadence silently run 4x over Space-Track's own
+        # documented per-hour limit.
+        now = time.monotonic()
+        while self._request_times and now - self._request_times[0] > ONE_HOUR_S:
+            self._request_times.popleft()
+        if len(self._request_times) >= MAX_REQUESTS_PER_HOUR:
+            sleep_for = ONE_HOUR_S - (now - self._request_times[0])
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
     def _get(self, path: str) -> requests.Response:
         """path is everything after `.../query/` - e.g.
         "class/gp/NORAD_CAT_ID/25544/format/json". Authenticates on first
@@ -111,7 +135,26 @@ class SpaceTrackClient:
         self._throttle()
         url = f"{BASE_QUERY_URL}/{path.lstrip('/')}"
         response = self._session.get(url, timeout=30)
-        self._last_request_time = time.monotonic()
+        now = time.monotonic()
+        self._last_request_time = now
+        self._request_times.append(now)
+
+        if response.status_code in (401, 403):
+            # A real, if previously unhandled, failure mode: this client
+            # is documented to be constructed once and reused across
+            # every call an adapter makes (see class docstring), so any
+            # longer-lived process eventually hits a real expired/
+            # invalidated session. Re-authenticate once and retry the
+            # same request - not looped, so a genuinely bad credential
+            # still fails loudly via _authenticate's own check rather
+            # than retrying forever.
+            self._session = self._authenticate()
+            self._throttle()
+            response = self._session.get(url, timeout=30)
+            now = time.monotonic()
+            self._last_request_time = now
+            self._request_times.append(now)
+
         response.raise_for_status()
         return response
 
@@ -145,9 +188,20 @@ class SpaceTrackClient:
         closest-approach numbers directly is separate follow-up work, so
         this change is independently reviewable.
         """
+        # Space-Track's predicate operators are strict ("<"/">", no
+        # documented "<="), so a literal "%3C{at_or_before}" excludes an
+        # element set whose epoch exactly equals at_or_before - a real
+        # mismatch against this method's own "AT OR BEFORE" docstring.
+        # Nudging the bound one second later makes the strict "<" query
+        # genuinely inclusive of that exact instant, without pulling in
+        # anything meaningfully after it.
+        try:
+            query_bound = (datetime.fromisoformat(at_or_before) + timedelta(seconds=1)).isoformat()
+        except ValueError:
+            query_bound = at_or_before
         path = (
             f"class/gp_history/NORAD_CAT_ID/{norad_id}/"
-            f"EPOCH/%3C{at_or_before}/orderby/EPOCH%20desc/limit/1/format/tle"
+            f"EPOCH/%3C{query_bound}/orderby/EPOCH%20desc/limit/1/format/tle"
         )
         return self.query_text(path)
 

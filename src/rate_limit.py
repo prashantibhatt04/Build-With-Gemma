@@ -31,6 +31,13 @@ class _Bucket:
     last_refill: float
 
 
+# How often (in number of allow() calls) to sweep for fully-refilled,
+# presumably-idle buckets - see RateLimiter._maybe_prune. Not every call,
+# to keep the common case O(1); a sweep is O(distinct clients seen), so
+# only worth paying occasionally, not on every single request.
+PRUNE_INTERVAL_CALLS = 1000
+
+
 class RateLimiter:
     def __init__(self, capacity: int, refill_per_second: float, now: Callable[[], float] = time.monotonic):
         if capacity <= 0:
@@ -39,6 +46,7 @@ class RateLimiter:
         self.refill_per_second = refill_per_second
         self._now = now
         self._buckets: dict[str, _Bucket] = {}
+        self._calls_since_prune = 0
 
     def allow(self, client_id: str) -> tuple[bool, float]:
         """Returns (allowed, retry_after_seconds). retry_after_seconds is
@@ -57,7 +65,39 @@ class RateLimiter:
 
         if bucket.tokens >= 1.0:
             bucket.tokens -= 1.0
-            return True, 0.0
+            allowed, retry_after = True, 0.0
+        else:
+            retry_after = (1.0 - bucket.tokens) / self.refill_per_second
+            allowed = False
 
-        retry_after = (1.0 - bucket.tokens) / self.refill_per_second
-        return False, retry_after
+        self._maybe_prune(now)
+        return allowed, retry_after
+
+    def _maybe_prune(self, now: float) -> None:
+        """Real bug this closes: _buckets used to grow without bound for
+        the life of the process - every distinct client_id (a raw source
+        IP for any unauthenticated caller) permanently added an entry,
+        even long after that client stopped sending real requests.
+
+        A bucket's own `tokens` field only updates when THAT client's
+        `allow()` is called again - an idle bucket's stored value is
+        whatever it was at its last real use, which is essentially never
+        exactly `capacity` (a real request always leaves it just under,
+        having just consumed a token). So idleness has to be judged by
+        elapsed time since last_refill instead: once enough real time
+        has passed that the bucket WOULD be fully refilled if touched
+        right now, recreating it fresh on that client's next real
+        request produces byte-identical effective state - evicting it
+        here loses nothing, it's a pure memory-bound fix, not a
+        behavior change."""
+        self._calls_since_prune += 1
+        if self._calls_since_prune < PRUNE_INTERVAL_CALLS:
+            return
+        self._calls_since_prune = 0
+        full_refill_seconds = self.capacity / self.refill_per_second
+        idle_client_ids = [
+            client_id for client_id, bucket in self._buckets.items()
+            if now - bucket.last_refill >= full_refill_seconds
+        ]
+        for client_id in idle_client_ids:
+            del self._buckets[client_id]

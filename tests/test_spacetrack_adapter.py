@@ -83,9 +83,23 @@ def test_fetch_batch_respects_custom_group_name_patterns(tmp_path):
 
 
 def test_enriched_adapter_attaches_a_real_matching_cdm(tmp_path):
+    """cdm_enrichment.py now also requires the CDM's own TCA to land
+    close to the freshly-screened event's real (now-relative) TCA - a
+    real QA-found bug fix (matching by object pair alone could silently
+    apply an unrelated pass's stale Pc). Discovers the real computed TCA
+    from a plain, unenriched scan first (same fake TLE data, same cache
+    dir - deterministic given identical input), then builds a CDM
+    fixture that actually lines up with it, rather than an arbitrary
+    fixed date that would only coincidentally match "now"."""
     client = _fake_client()
+    plain_adapter = SpaceTrackAdapter(
+        client=client, group_name_patterns={"cosmos-2251-debris": "COSMOS 2251 DEB"},
+        exclude_within_group=(), cache_dir=tmp_path,
+    )
+    real_tca = plain_adapter.fetch_batch(limit=10)[0].raw_data["time_of_closest_approach"]
+
     client.fetch_recent_cdms.return_value = [{
-        "PC": "3.5e-04", "TCA": "2026-08-10T04:12:00.000000", "MIN_RNG": "120.0",
+        "PC": "3.5e-04", "TCA": real_tca, "MIN_RNG": "120.0",
         "CREATED": "2026-08-09T15:00:00.000000", "SAT_1_ID": "30002", "SAT_2_ID": "30003",
     }]
     adapter = EnrichedSpaceTrackAdapter(

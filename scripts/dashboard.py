@@ -121,13 +121,21 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
 
 def _render_orbit_plot(entry: DecisionLogEntry) -> None:
     raw = entry.telemetry.raw_data
-    if entry.telemetry.source != "celestrak" or "object_a_id" not in raw:
+    # Reuses trends.is_real_live_source rather than a hardcoded
+    # source == "celestrak" check - a QA pass found the original check
+    # wrongly excluded real Space-Track events too, which carry the
+    # exact same real NORAD object_a_id/object_b_id (SpaceTrackAdapter
+    # is a thin CelesTrakAdapter subclass - see spacetrack_adapter.py)
+    # and are just as propagatable, often with a higher-confidence real
+    # Pc attached besides.
+    if not is_real_live_source(entry) or "object_a_id" not in raw:
         st.caption(
             f"Orbit plot unavailable - this event's source is {entry.telemetry.source!r}, "
-            "not a real NORAD-catalogued object pair. Only celestrak-sourced events have "
-            "real TLEs to propagate (synthetic fixtures aren't real orbits; historical "
-            "replays document a real past event but CelesTrak's public API only ever "
-            "serves CURRENT TLEs, not archival ones - see src/ingestion/historical_adapter.py)."
+            "not a real NORAD-catalogued object pair. Only real live conjunction scans "
+            "(CelesTrak or Space-Track) have real TLEs to propagate (synthetic fixtures "
+            "aren't real orbits; historical replays document a real past event but "
+            "CelesTrak's/Space-Track's public APIs only ever serve CURRENT TLEs, not "
+            "archival ones - see src/ingestion/historical_adapter.py)."
         )
         return
 
@@ -272,6 +280,22 @@ def _get_shared_client() -> GemmaClient:
     return st.session_state["gemma_client"]
 
 
+def _get_shared_budget_tracker() -> DeltaVBudgetTracker:
+    """One DeltaVBudgetTracker per browser session, reused across every
+    button click and rerun - the same real bug class this project
+    already fixed once for GemmaClient's circuit breaker above
+    (_get_shared_client). run_once's own budget_tracker=None default
+    constructs a brand-new tracker with the FULL starting budget on
+    every call - without this, a real multi-scan operator session could
+    burn most of the budget on one CRITICAL event, then silently get it
+    back to full on the very next click, defeating the "BUDGET
+    INSUFFICIENT - ESCALATE FOR REVIEW" safety path this tracker exists
+    to trigger."""
+    if "budget_tracker" not in st.session_state:
+        st.session_state["budget_tracker"] = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
+    return st.session_state["budget_tracker"]
+
+
 def _require_operator_identity() -> str:
     """Real authentication gate (ROADMAP_TO_PRODUCT.md Phase 5) - see
     src/auth.py's module docstring for why this exists. When
@@ -323,6 +347,7 @@ def main() -> None:
     operator = _require_operator_identity()
 
     client = _get_shared_client()
+    budget_tracker = _get_shared_budget_tracker()
     logger = DecisionLogger(settings=settings)
 
     _render_live_tracking()
@@ -343,7 +368,7 @@ def main() -> None:
             try:
                 with st.spinner("Screening real CelesTrak data..."):
                     adapter = CelesTrakAdapter()
-                    run_once(adapter=adapter, client=client, logger=logger, limit=fetch_limit)
+                    run_once(adapter=adapter, client=client, logger=logger, budget_tracker=budget_tracker, limit=fetch_limit)
                     stats = adapter.last_scan_stats
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't fetch live CelesTrak data: {exc}")
@@ -361,7 +386,10 @@ def main() -> None:
                     with st.spinner("Screening real Space-Track data + checking for a real CDM match..."):
                         st_client = SpaceTrackClient(settings.spacetrack_username, settings.spacetrack_password)
                         adapter = EnrichedSpaceTrackAdapter(client=st_client)
-                        entries = run_once(adapter=adapter, client=client, logger=logger, limit=fetch_limit)
+                        entries = run_once(
+                            adapter=adapter, client=client, logger=logger,
+                            budget_tracker=budget_tracker, limit=fetch_limit,
+                        )
                         stats = adapter.last_scan_stats
                 except SpaceTrackAuthError as exc:
                     st.error(f"Space-Track authentication failed: {exc}")
@@ -387,8 +415,7 @@ def main() -> None:
                 with st.spinner("Running synthetic CRITICAL conjunctions..."):
                     run_id = uuid.uuid4().hex[:8]
                     adapter = SyntheticCriticalAdapter(run_id=run_id, id_prefix="conj-dashboard")
-                    tracker = DeltaVBudgetTracker(starting_budget_m_s=settings.delta_v_budget_m_s)
-                    run_once(adapter=adapter, client=client, logger=logger, budget_tracker=tracker, limit=4)
+                    run_once(adapter=adapter, client=client, logger=logger, budget_tracker=budget_tracker, limit=4)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't run the synthetic CRITICAL scenario: {exc}")
             else:
@@ -407,7 +434,7 @@ def main() -> None:
                     if settings.spacetrack_username and settings.spacetrack_password:
                         st_client = SpaceTrackClient(settings.spacetrack_username, settings.spacetrack_password)
                     adapter = HistoricalReplayAdapter(run_id=run_id, spacetrack_client=st_client)
-                    run_once(adapter=adapter, client=client, logger=logger, limit=1)
+                    run_once(adapter=adapter, client=client, logger=logger, budget_tracker=budget_tracker, limit=1)
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't replay the historical event: {exc}")
             else:

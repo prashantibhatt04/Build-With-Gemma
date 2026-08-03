@@ -24,7 +24,8 @@ reasons:
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Optional
 
 from ..pc_severity import extract_cdm_summary
 from ..schemas import TelemetryEvent
@@ -32,9 +33,52 @@ from ..schemas import TelemetryEvent
 if TYPE_CHECKING:
     from .spacetrack_client import SpaceTrackClient
 
+# How close a CDM's own TCA must be to the freshly-screened event's own
+# time_of_closest_approach to treat them as describing the same real
+# encounter. Matching on object pair alone isn't enough: two objects with
+# repeatedly close passes (common for fragments of the same debris
+# field) can have a real CDM published for one specific pass still sit
+# among the 10 most recent when a geometrically unrelated pass between
+# the same two objects gets screened later - applying that stale Pc
+# would misclassify a genuinely different encounter. 24h is generous
+# relative to how often two catalog objects plausibly re-conjunct (not
+# sub-hour for the vast majority of real objects), while still tolerant
+# of a freshly re-propagated TCA drifting a bit from the CDM's own
+# predicted one due to a newer TLE.
+MAX_TCA_DIFFERENCE = timedelta(hours=24)
+
 
 def _pair_key(id_a: str, id_b: str) -> frozenset[str]:
     return frozenset((str(id_a), str(id_b)))
+
+
+def _parse_tca(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _tca_close_enough(cdm_tca_value, event_tca_value) -> bool:
+    """True only if both TCAs parse and land within MAX_TCA_DIFFERENCE of
+    each other - never on missing/unparseable data (fails closed: no
+    match found is the existing safe fallback to the distance-threshold
+    path, same as any other non-matching event)."""
+    cdm_tca = _parse_tca(cdm_tca_value)
+    event_tca = _parse_tca(event_tca_value)
+    if cdm_tca is None or event_tca is None:
+        return False
+    # Space-Track's own CDM TCA has no UTC offset; this project's event
+    # TCAs are timezone-aware. Normalize both to naive UTC before
+    # subtracting so a real match isn't missed (or a mismatch missed)
+    # purely because of an aware/naive comparison error.
+    if cdm_tca.tzinfo is not None:
+        cdm_tca = cdm_tca.astimezone(timezone.utc).replace(tzinfo=None)
+    if event_tca.tzinfo is not None:
+        event_tca = event_tca.astimezone(timezone.utc).replace(tzinfo=None)
+    return abs(cdm_tca - event_tca) <= MAX_TCA_DIFFERENCE
 
 
 def enrich_conjunction_events_with_pc(
@@ -73,7 +117,7 @@ def enrich_conjunction_events_with_pc(
             enriched.append(event)
             continue
         match = cdm_by_pair.get(_pair_key(object_a_id, object_b_id))
-        if match is None:
+        if match is None or not _tca_close_enough(match.get("cdm_tca"), raw.get("time_of_closest_approach")):
             enriched.append(event)
             continue
         enriched.append(event.model_copy(update={"raw_data": {**raw, **match}}))

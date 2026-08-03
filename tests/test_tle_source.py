@@ -140,7 +140,27 @@ def test_fetch_spacetrack_group_text_queries_with_a_like_filter_and_caches(tmp_p
     assert parse_tle_blocks(second) == parse_tle_blocks(SAMPLE_TLE_TEXT)
     assert client.query_text.call_count == 1, "second call should reuse the disk cache, not re-query"
 
-    assert (tmp_path / "spacetrack-cosmos-2251-debris.txt").exists()
+    # Filename includes a hash of the name_pattern, not just group_slug
+    # (see fetch_spacetrack_group_text's own docstring on why) - glob
+    # rather than assert an exact literal hash value.
+    assert list(tmp_path.glob("spacetrack-cosmos-2251-debris-*.txt"))
+
+
+def test_fetch_spacetrack_group_text_does_not_collide_across_different_patterns_for_the_same_slug(tmp_path):
+    """Real bug this closes: the cache used to be keyed by group_slug
+    alone, so two calls sharing a slug but querying a DIFFERENT
+    name_pattern (a real possibility - the mapping is caller-configurable)
+    would silently serve the first pattern's stale, mislabeled TLE data
+    back for the second - no error, no signal anything was wrong."""
+    client = _fake_spacetrack_client(SAMPLE_TLE_TEXT)
+
+    fetch_spacetrack_group_text("COSMOS 2251 DEB", client, tmp_path, group_slug="stations")
+    fetch_spacetrack_group_text("TIANHE", client, tmp_path, group_slug="stations")
+
+    # Two real, distinct queries were issued - the second pattern was
+    # never served from the first pattern's cache entry.
+    assert client.query_text.call_count == 2
+    assert len(list(tmp_path.glob("spacetrack-stations-*.txt"))) == 2
 
 
 def test_fetch_spacetrack_group_text_strips_the_real_3le_name_line_prefix(tmp_path):
@@ -173,5 +193,5 @@ def test_fetch_spacetrack_group_text_uses_a_cache_file_distinct_from_celestrak(t
         fetch_tle_group_text("stations", tmp_path)
         assert mock_get.call_count == 1, "CelesTrak's own cache file must be unaffected by the Space-Track fetch above"
 
-    assert (tmp_path / "spacetrack-stations.txt").exists()
+    assert list(tmp_path.glob("spacetrack-stations-*.txt"))
     assert (tmp_path / "stations.txt").exists()

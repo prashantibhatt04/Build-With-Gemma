@@ -76,9 +76,22 @@ def _entry_to_text(entry: DecisionLogEntry) -> str:
     if "object_a_name" in raw:
         lines.append(f"objects: {raw['object_a_name']} vs {raw['object_b_name']}")
         lines.append(f"min_distance_km: {raw.get('min_distance_km')}")
-    elif "object_name" in raw:
+    elif "perigee_altitude_km" in raw:
+        # Branches on the actual distinguishing field, not just
+        # "object_name" - the attitude hazard (Phase 18) also has a
+        # single object_name but a different shape entirely (see
+        # display.py's identical discipline). A real QA-found bug: the
+        # old single "elif object_name" branch always rendered
+        # perigee_altitude_km even for attitude entries, which don't
+        # have one - "perigee_altitude_km: None" for every attitude
+        # entry, with pointing_error_deg (the actual diagnostic number
+        # for that hazard) never mentioned at all.
         lines.append(f"object: {raw['object_name']}")
         lines.append(f"perigee_altitude_km: {raw.get('perigee_altitude_km')}")
+    elif "pointing_error_deg" in raw:
+        lines.append(f"object: {raw['object_name']}")
+        lines.append(f"pointing_error_deg: {raw.get('pointing_error_deg')}")
+        lines.append(f"angular_rate_deg_s: {raw.get('angular_rate_deg_s')}")
     approval = entry.decision.maneuver_approval
     if approval is not None:
         lines.append(

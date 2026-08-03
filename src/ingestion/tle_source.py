@@ -7,6 +7,7 @@ logic, instead of duplicating it per adapter.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 import time
@@ -74,11 +75,16 @@ def fetch_spacetrack_group_text(
     CelesTrak's own unprefixed convention exactly.
 
     Cached separately from CelesTrak's cache files (a "spacetrack-"
-    prefix, keyed by group_slug rather than the raw name_pattern, since
-    the pattern itself may contain characters that aren't safe in a
-    filename) - the two sources are never assumed to return identical
+    prefix) - the two sources are never assumed to return identical
     results even for a similarly-named group, so sharing a cache entry
-    between them would be wrong.
+    between them would be wrong. Keyed by group_slug AND a short hash of
+    the actual name_pattern (not the raw pattern text itself, which can
+    contain characters unsafe in a filename) - group_slug alone isn't a
+    safe cache key on its own: two adapter instances using the same slug
+    with a DIFFERENT name_pattern (a real possibility - the mapping is
+    caller-configurable) would otherwise silently share one cache file,
+    serving one pattern's stale TLE data back under the other pattern's
+    label with no error or indication anything was wrong.
 
     Filters to DECAY_DATE/null-val (never decayed) and a recent EPOCH
     (within the last 30 days) - a real bug found live-testing against an
@@ -94,7 +100,8 @@ def fetch_spacetrack_group_text(
     produced NaN; the same query with this filter returned 13 objects,
     every one of which propagated cleanly.
     """
-    cache_path = cache_dir / f"spacetrack-{group_slug}.txt"
+    pattern_hash = hashlib.sha256(name_pattern.encode("utf-8")).hexdigest()[:10]
+    cache_path = cache_dir / f"spacetrack-{group_slug}-{pattern_hash}.txt"
     if cache_path.exists():
         age_seconds = time.time() - cache_path.stat().st_mtime
         if age_seconds < CACHE_MAX_AGE_SECONDS:

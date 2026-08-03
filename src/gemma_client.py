@@ -171,10 +171,19 @@ class GemmaClient:
         try:
             response = requests.post(url, json=payload, timeout=60)
             response.raise_for_status()
+            data = response.json()
         except requests.RequestException as exc:
             raise GemmaClientError(f"Ollama embeddings unreachable at {url}: {exc}") from exc
+        except ValueError as exc:
+            # response.json() raises a plain ValueError (json.JSONDecodeError
+            # is a subclass) on a 200 with a non-JSON body - a real
+            # possibility (a proxy/maintenance page, a truncated response),
+            # not just a transport-level failure. Must still become a
+            # GemmaClientError, not an uncaught exception - generate()'s own
+            # docstring promises callers "text, or a GemmaClientError",
+            # never a raw exception.
+            raise GemmaClientError(f"Ollama embeddings returned a non-JSON response: {exc}") from exc
 
-        data = response.json()
         if "embeddings" not in data:
             raise GemmaClientError(f"Unexpected Ollama embeddings response shape: {data}")
         return data["embeddings"]
@@ -209,10 +218,15 @@ class GemmaClient:
         try:
             response = requests.post(url, json=payload, timeout=timeout)
             response.raise_for_status()
+            data = response.json()
         except requests.RequestException as exc:
             raise GemmaClientError(f"Ollama backend unreachable at {url}: {exc}") from exc
+        except ValueError as exc:
+            # See embed()'s identical guard above - a 200 with a non-JSON
+            # body must become a GemmaClientError too, not an uncaught
+            # ValueError breaking generate()'s "never raises" contract.
+            raise GemmaClientError(f"Ollama backend returned a non-JSON response: {exc}") from exc
 
-        data = response.json()
         if "response" not in data:
             raise GemmaClientError(f"Unexpected Ollama response shape: {data}")
         return data["response"]
@@ -245,10 +259,14 @@ class GemmaClient:
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=timeout)
             response.raise_for_status()
+            data = response.json()
         except requests.RequestException as exc:
             raise GemmaClientError(f"Hosted Gemma API unreachable: {exc}") from exc
+        except ValueError as exc:
+            # See _generate_ollama's identical guard - a 200 with a
+            # non-JSON body must become a GemmaClientError too.
+            raise GemmaClientError(f"Hosted Gemma API returned a non-JSON response: {exc}") from exc
 
-        data = response.json()
         try:
             return data["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError) as exc:

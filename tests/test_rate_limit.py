@@ -2,7 +2,7 @@
 (no real time.sleep needed to prove refill behavior)."""
 import pytest
 
-from src.rate_limit import RateLimiter
+from src.rate_limit import PRUNE_INTERVAL_CALLS, RateLimiter
 
 
 class _FakeClock:
@@ -80,3 +80,39 @@ def test_retry_after_reflects_real_remaining_wait_time():
 def test_capacity_must_be_positive():
     with pytest.raises(ValueError):
         RateLimiter(capacity=0, refill_per_second=1.0)
+
+
+def test_prunes_a_fully_refilled_idle_bucket_after_enough_calls():
+    """Real bug this closes: _buckets grew without bound for the life of
+    the process - every distinct client_id (a raw source IP for any
+    unauthenticated caller) permanently added an entry, even long after
+    that client stopped sending real requests. One client makes a single
+    real request (leaving its bucket not-full), then goes idle long
+    enough to fully refill while PRUNE_INTERVAL_CALLS worth of OTHER
+    traffic crosses the sweep threshold - its now-idle bucket must be
+    evicted."""
+    clock = _FakeClock()
+    limiter = RateLimiter(capacity=5, refill_per_second=1.0, now=clock)
+
+    limiter.allow("idle-client")
+    clock.advance(100.0)  # plenty of time for idle-client's bucket to fully refill
+
+    for i in range(PRUNE_INTERVAL_CALLS):
+        limiter.allow(f"other-client-{i}")
+
+    assert "idle-client" not in limiter._buckets
+
+
+def test_does_not_prune_a_bucket_with_real_pending_consumption_state():
+    """A bucket that ISN'T fully refilled holds real state (how close
+    this client is to its own limit) that pruning must never discard -
+    only idle, fully-refilled buckets are safe to evict."""
+    clock = _FakeClock()
+    limiter = RateLimiter(capacity=5, refill_per_second=1.0, now=clock)
+
+    limiter.allow("active-client")  # tokens now 4/5 - not full, must survive any sweep
+
+    for i in range(PRUNE_INTERVAL_CALLS):
+        limiter.allow(f"other-client-{i}")
+
+    assert "active-client" in limiter._buckets

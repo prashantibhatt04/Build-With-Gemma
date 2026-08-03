@@ -48,6 +48,43 @@ def check_log_dir_writable(settings: Settings) -> CheckResult:
         return CheckResult("Log directory writable", False, str(exc))
 
 
+def check_postgres_reachable(settings: Settings) -> CheckResult:
+    """The real check that actually matters once DATABASE_URL is
+    configured - a cheap real connection attempt (no query), same
+    connect-and-close pattern test_postgres_logging.py's own
+    reachability probe uses. psycopg is imported lazily here, same as
+    logging_utils._default_store, so the common JSONL-only path never
+    requires it installed at all."""
+    try:
+        import psycopg
+    except ImportError as exc:
+        return CheckResult(
+            "Postgres reachable", False,
+            f"DATABASE_URL is configured but psycopg isn't installed: {exc}",
+        )
+    try:
+        with psycopg.connect(settings.database_url, connect_timeout=5):
+            pass
+    except psycopg.OperationalError as exc:
+        return CheckResult("Postgres reachable", False, str(exc))
+    return CheckResult("Postgres reachable", True, "connected successfully")
+
+
+def check_storage_writable(settings: Settings) -> CheckResult:
+    """Checks whichever backend DecisionLogger will actually use for
+    this configuration (see logging_utils._default_store) - real
+    Postgres reachability when DATABASE_URL is set, the JSONL log_dir
+    otherwise. A real bug this closes: run_all_checks used to always run
+    check_log_dir_writable, even for a Postgres-only deployment where
+    nothing ever writes to log_dir - a false preflight failure for a
+    directory that doesn't matter, while never checking the one thing
+    that DOES matter for that deployment shape (whether the configured
+    database is even reachable)."""
+    if settings.database_url:
+        return check_postgres_reachable(settings)
+    return check_log_dir_writable(settings)
+
+
 def check_gemma_reachable(settings: Settings) -> CheckResult:
     client = GemmaClient(settings=settings)
     try:
@@ -65,10 +102,11 @@ def check_gemma_reachable(settings: Settings) -> CheckResult:
 
 
 def run_all_checks(settings: Settings = default_settings) -> list[CheckResult]:
-    """Config and filesystem checks first (fast, no network) - Gemma
+    """Config and storage checks first (fast, and checks whichever
+    backend is actually configured - see check_storage_writable) - Gemma
     reachability last, since it's the one real network call."""
     return [
         check_config(settings),
-        check_log_dir_writable(settings),
+        check_storage_writable(settings),
         check_gemma_reachable(settings),
     ]

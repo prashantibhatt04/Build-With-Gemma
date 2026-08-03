@@ -24,7 +24,7 @@ from .schemas import DecisionLogEntry
 SEVERITY_ORDER = ["nominal", "watch", "warning", "critical"]
 SEVERITY_COLORS = {"nominal": "#2ca02c", "watch": "#bcbd22", "warning": "#ff7f0e", "critical": "#d62728"}
 
-# Real, LIVE CelesTrak scans only - not the synthetic fixtures
+# Real, LIVE scans only - not the synthetic fixtures
 # (SyntheticCriticalAdapter, SyntheticAttitudeAdapter) or the historical
 # replay. A QA pass found that the trend charts below were originally
 # aggregating every logged entry indiscriminately: after a demo has been
@@ -36,7 +36,14 @@ SEVERITY_COLORS = {"nominal": "#2ca02c", "watch": "#bcbd22", "warning": "#ff7f0e
 # is excluded too: it's real-in-origin, but replaying the same fixed 2009
 # record on every demo run makes it behave like synthetic data for "trend
 # over time" purposes - it doesn't represent anything new happening.
-REAL_LIVE_SOURCES = {"celestrak", "celestrak-decay"}
+#
+# "spacetrack" (SpaceTrackAdapter/EnrichedSpaceTrackAdapter) is real and
+# live too, and was originally missing here - a second real QA pass
+# found real Space-Track scans were silently excluded from these charts
+# and mislabeled "real: false" in the Recurring Objects table below,
+# even though they can carry a genuinely higher-confidence real Pc than
+# a plain CelesTrak distance screen.
+REAL_LIVE_SOURCES = {"celestrak", "celestrak-decay", "spacetrack"}
 
 
 def is_real_live_source(entry: DecisionLogEntry) -> bool:

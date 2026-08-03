@@ -77,6 +77,38 @@ def test_entry_to_text_includes_key_conjunction_fields():
     assert "rationale: Test rationale." in text
 
 
+def _attitude_entry(event_id: str) -> DecisionLogEntry:
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="synthetic-attitude-fixture",
+        raw_data={
+            "object_id": "99010", "object_name": "SYNTH-SAT-TEST",
+            "pointing_error_deg": 12.5, "angular_rate_deg_s": 1.5, "solar_panel_power_pct": 60.0,
+        },
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=Severity.WATCH, description="Test finding.", confidence=0.8)
+    decision = Decision(action="continue", rationale="Test rationale.", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0),
+    )
+
+
+def test_entry_to_text_covers_the_attitude_shape_not_just_decay():
+    """Real bug this closes: attitude entries also have a single
+    object_name (same as decay), so the old code's single "elif
+    object_name" branch always rendered perigee_altitude_km - which
+    attitude entries don't have - as "perigee_altitude_km: None", and
+    never mentioned pointing_error_deg at all, the actual diagnostic
+    number for that hazard type. Both the embedding and the context
+    handed to Gemma use this same text, so retrieval AND the final
+    answer were both degraded for this hazard type."""
+    text = _entry_to_text(_attitude_entry("attitude-1"))
+
+    assert "pointing_error_deg: 12.5" in text
+    assert "angular_rate_deg_s: 1.5" in text
+    assert "perigee_altitude_km" not in text
+
+
 def test_cosine_similarity_identical_orthogonal_opposite():
     import numpy as np
 

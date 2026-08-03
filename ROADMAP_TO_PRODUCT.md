@@ -964,3 +964,17 @@ client's real thresholds, `verify_maneuver` respecting a custom
 
 Documented in `.env.example` (all nine new env vars) and a new README
 "Tune hazard severity thresholds" setup step.
+
+**A follow-up customer-discoverability check** (the same class of gap
+already found for `WATCHED_NORAD_IDS`) asked: once an operator sets one
+of these nine env vars, how do they confirm it actually took effect,
+short of reading `src/pipeline.py`? Closed by adding a
+"⚙️ Hazard severity thresholds" sidebar expander to
+`scripts/dashboard.py`, right below the existing watch-list status
+notice - labeled `(defaults)` or `(customized)` depending on whether
+any of the nine differ from their original values, and always showing
+the real currently-active cutoffs for all three hazard types. 2 new
+tests (`tests/test_dashboard_app.py`), full suite: 402/402.
+Live-verified in a real running dashboard: confirmed the expander
+renders the exact real values from a real `Settings` singleton, both
+collapsed (accessibility tree) and expanded (screenshot).

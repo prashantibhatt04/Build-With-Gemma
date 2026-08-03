@@ -324,6 +324,48 @@ def _render_monitoring_status() -> None:
         )
 
 
+_DEFAULT_SEVERITY_THRESHOLDS = {
+    "conjunction_critical_km": 5.0,
+    "conjunction_warning_km": 25.0,
+    "conjunction_watch_km": 100.0,
+    "decay_critical_perigee_km": 200.0,
+    "decay_warning_perigee_km": 300.0,
+    "decay_watch_perigee_km": 500.0,
+    "attitude_critical_deg": 45.0,
+    "attitude_warning_deg": 15.0,
+    "attitude_watch_deg": 5.0,
+}
+
+
+def _using_custom_severity_thresholds() -> bool:
+    return any(getattr(settings, field) != default for field, default in _DEFAULT_SEVERITY_THRESHOLDS.items())
+
+
+def _render_severity_threshold_status() -> None:
+    """Surfaces the real, currently-active CRITICAL/WARNING/WATCH cutoffs
+    (see Settings.conjunction_critical_km and friends, src/config.py) so
+    an operator who just configured e.g. CONJUNCTION_CRITICAL_KM in .env
+    can actually confirm it took effect, without reading source code -
+    the same discoverability gap already closed for WATCHED_NORAD_IDS
+    (see _render_monitoring_status above and ROADMAP_TO_PRODUCT.md)."""
+    label = "⚙️ Hazard severity thresholds"
+    label += " (customized)" if _using_custom_severity_thresholds() else " (defaults)"
+    with st.sidebar.expander(label):
+        st.caption("Real, deterministic cutoffs - not Gemma-derived. Set via .env, see .env.example.")
+        st.write(
+            f"**Conjunction distance** - CRITICAL < {settings.conjunction_critical_km}km, "
+            f"WARNING < {settings.conjunction_warning_km}km, WATCH < {settings.conjunction_watch_km}km"
+        )
+        st.write(
+            f"**Decay perigee altitude** - CRITICAL < {settings.decay_critical_perigee_km}km, "
+            f"WARNING < {settings.decay_warning_perigee_km}km, WATCH < {settings.decay_watch_perigee_km}km"
+        )
+        st.write(
+            f"**Attitude pointing error** - CRITICAL ≥ {settings.attitude_critical_deg}°, "
+            f"WARNING ≥ {settings.attitude_warning_deg}°, WATCH ≥ {settings.attitude_watch_deg}°"
+        )
+
+
 def _get_shared_budget_tracker() -> DeltaVBudgetTracker:
     """One DeltaVBudgetTracker per browser session, reused across every
     button click and rerun - the same real bug class this project
@@ -407,6 +449,7 @@ def main() -> None:
 
         st.divider()
         _render_monitoring_status()
+        _render_severity_threshold_status()
 
         st.divider()
         st.subheader("Generate live activity")

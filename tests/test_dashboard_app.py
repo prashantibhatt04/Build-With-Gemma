@@ -157,6 +157,47 @@ def test_dashboard_shows_real_asset_notice_when_watch_list_configured():
     assert any("25544" in s.value and "48274" in s.value for s in at.sidebar.success)
 
 
+@contextmanager
+def _severity_thresholds(**overrides: float):
+    """Same object.__setattr__-on-the-shared-singleton pattern as
+    _operator_tokens/_spacetrack_credentials/_watched_norad_ids above."""
+    originals = {field: getattr(settings, field) for field in overrides}
+    for field, value in overrides.items():
+        object.__setattr__(settings, field, value)
+    try:
+        yield
+    finally:
+        for field, value in originals.items():
+            object.__setattr__(settings, field, value)
+
+
+def test_dashboard_shows_default_severity_thresholds_by_default():
+    at = AppTest.from_file(DASHBOARD_PATH)
+    at.run(timeout=30)
+
+    labels = [e.label for e in at.sidebar.expander]
+    assert any("Hazard severity thresholds" in label and "(defaults)" in label for label in labels)
+
+
+def test_dashboard_shows_customized_label_and_real_values_when_thresholds_overridden():
+    """Real feature this tests: an operator who configured
+    CONJUNCTION_CRITICAL_KM (or any of the other 8 threshold env vars)
+    must be able to see that it actually took effect from the dashboard
+    itself, without reading source code - the same discoverability gap
+    already closed for WATCHED_NORAD_IDS."""
+    with _severity_thresholds(conjunction_critical_km=15.0, attitude_warning_deg=20.0):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+        labels = [e.label for e in at.sidebar.expander]
+        assert any("Hazard severity thresholds" in label and "(customized)" in label for label in labels)
+
+        expander = next(e for e in at.sidebar.expander if "Hazard severity thresholds" in e.label)
+        text = " ".join(m.value for m in expander.markdown)
+        assert "15.0km" in text
+        assert "20.0°" in text
+
+
 def test_dashboard_shows_spacetrack_button_when_credentials_configured():
     # Real network calls are never triggered in this suite - the button's
     # mere presence is what's being checked here, same discipline this

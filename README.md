@@ -119,8 +119,24 @@ phase and why.
   Gemma-vs-fallback narration mix over time, aggregated from the real
   accumulated log
 - `src/preflight.py` — config/connectivity/filesystem health checks
+- `src/auth.py` — real operator token authentication for the dashboard
+  (see [`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) Phase 5)
+- `src/catalog_screening.py` — a fast apogee/perigee altitude-range
+  overlap filter (Phase 3) so conjunction screening scales past a
+  curated sample toward a real catalog
+- `src/pc_severity.py` — real probability-of-collision severity
+  classification from a Space-Track CDM, when one is available (Phase 2)
+- `src/postgres_logging.py` — a real Postgres-backed alternative to the
+  JSONL audit log, for continuous/concurrent operation (Phase 4)
+- `src/ingestion/spacetrack_client.py` / `spacetrack_adapter.py` /
+  `cdm_enrichment.py` — an alternative, credentialed data source to
+  CelesTrak (Phase 1)
 - `scripts/run_demo.py` — **the guided, step-by-step CLI demo** (see below)
 - `scripts/dashboard.py` — **the live browser dashboard** (see below)
+- `scripts/api.py` — a real REST API over the same audit log, for
+  programmatic integration (Phase 6, see below)
+- `scripts/scheduler.py` — continuous background screening loop for
+  unattended/production operation (see below)
 - `scripts/query_log.py` — standalone CLI for "ask about the mission log"
   (see `src/rag.py`) outside the browser
 - `scripts/check_gemma.py`, `scripts/mark_reviewed.py`,
@@ -136,6 +152,9 @@ phase and why.
 - Either [Ollama](https://ollama.com) (for a fully local setup) or a
   hosted Gemini-style API key (for the cloud path) — see below, you don't
   need both
+- [Docker](https://www.docker.com) — only needed for the Docker
+  deployment path below; the local setup above needs neither Docker nor
+  Postgres
 
 ### 1. Clone and install
 
@@ -237,6 +256,63 @@ the synthetic CRITICAL scenario, the synthetic attitude/pointing-loss
 scenario, or a historical replay) without leaving the browser. Opens at
 `http://localhost:8501` by default.
 
+## Run the REST API (programmatic access)
+
+```bash
+uvicorn scripts.api:app --reload
+```
+
+The dashboard is for a human; this is for an operator's own
+mission-control software. A real FastAPI service over the exact same
+audit log (`GET /decisions`, `/decisions/{event_id}`,
+`/decisions/pending-approval`, `/metrics`; `POST
+/decisions/{event_id}/approve|reject|review`) — see
+[`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) Phase 6. Interactive
+docs at `http://localhost:8000/docs` once running. Reads stay open if
+`OPERATOR_TOKENS` isn't configured (same zero-setup default as the
+dashboard, with a visible `X-Warning` response header); writes always
+require a real token — `Authorization: Bearer <token>` — and refuse to
+run at all (503) if none are configured, stricter than the dashboard's
+free-text fallback since a programmatic caller has no human-readable-name
+equivalent.
+
+## Run the scheduler (continuous / unattended operation)
+
+```bash
+python scripts/scheduler.py                          # real cadence: ticks every ~8h, runs until Ctrl-C
+python scripts/scheduler.py --interval-seconds 60     # faster cadence, for demo/testing
+python scripts/scheduler.py --max-iterations 3        # stop after N ticks, for testing
+```
+
+Every other way to run this project is on-demand (open the dashboard and
+click a button, or run the guided demo once). This runs the same real
+conjunction and decay screens continuously, on a fixed interval, and
+fires a distinct system-health alert (separate from a CRITICAL-finding
+alert) if it fails several ticks in a row — see
+[`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) Phase 4/5. Uses
+whichever `DecisionLogger` backend is configured (JSONL files by
+default, or a real Postgres database via `DATABASE_URL` — JSONL's
+whole-file rewrites aren't safe under the concurrent writes a scheduler
+running alongside a dashboard/CLI operator would produce).
+
+## Production deployment (Docker)
+
+```bash
+cp .env.example .env   # fill in real values first
+docker compose up -d
+```
+
+Brings up four real services: a Postgres database, the dashboard
+(`http://localhost:8501`), the REST API (`http://localhost:8000`), and
+the scheduler above — see `docker-compose.yml`/`Dockerfile`. Requires a
+real `POSTGRES_PASSWORD` in `.env` (`docker compose up` refuses to start
+without one, rather than silently using a guessable default). Secrets
+come from `.env` via `env_file`, never baked into the image. Set
+`OPERATOR_TOKENS` in `.env` before exposing the dashboard or API beyond
+localhost — see `src/auth.py`; without it, the dashboard's "Operator
+name" field is free text anyone with the page open can set to anything,
+and the API's write endpoints refuse to run at all.
+
 ## Ask about the mission log
 
 ```bash
@@ -287,6 +363,8 @@ python scripts/approve_maneuver.py <event_id> <name> [--reject]  # resolve a pen
 - [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) — problem statement, architecture diagrams, field glossary
 - [`DEMO.md`](DEMO.md) — full stage-by-stage walkthrough with copy-pasteable commands
 - [`PHASE_PROGRESS.md`](PHASE_PROGRESS.md) — complete build history, phase by phase
+- [`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) — what's missing to go from
+  this submission to a real product, and progress against that plan
 - [`KAGGLE_WRITEUP.md`](KAGGLE_WRITEUP.md) — submission writeup (architecture, Gemma usage, engineering hurdles, design choices)
 
 ## License

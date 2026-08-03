@@ -63,6 +63,29 @@ def _conjunction_entry(severity: Severity, min_distance_km: float = 50.0) -> Dec
     )
 
 
+def test_render_entry_shows_pc_when_severity_source_is_probability_of_collision():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.WARNING)
+    entry.telemetry.raw_data["collision_probability"] = 2.5e-05
+    entry.finding.severity_source = "probability-of-collision"
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "Pc=2.50e-05" in output
+
+
+def test_render_entry_omits_pc_when_severity_source_is_distance_threshold():
+    console = Console(record=True, width=120)
+    entry = _conjunction_entry(Severity.WATCH)
+    entry.finding.severity_source = "distance-threshold"
+
+    render_entry(console, entry)
+    output = console.export_text()
+
+    assert "Pc=" not in output
+
+
 def test_render_entry_shows_severity_badge_and_rationale():
     console = Console(record=True, width=120)
     entry = _conjunction_entry(Severity.WATCH)

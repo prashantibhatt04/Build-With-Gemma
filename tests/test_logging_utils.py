@@ -89,7 +89,7 @@ def test_approve_maneuver_verifies_and_records_human_approval(tmp_path):
     # Persisted, not just returned in memory.
     refetched = logger.find_entry("critical-1")
     assert refetched is not None
-    assert refetched[2].decision.verified_clearance is not None
+    assert refetched.decision.verified_clearance is not None
 
 
 def test_approve_maneuver_rejection_leaves_nothing_executed(tmp_path):
@@ -138,14 +138,14 @@ def test_mark_reviewed_updates_matching_entry_and_leaves_others_untouched(tmp_pa
     # the other two lines were left alone.
     found_2 = logger.find_entry("event-2")
     assert found_2 is not None
-    assert found_2[2].human_reviewed is True
-    assert found_2[2].reviewed_by == "alice"
+    assert found_2.human_reviewed is True
+    assert found_2.reviewed_by == "alice"
 
     for event_id in ("event-1", "event-3"):
         found = logger.find_entry(event_id)
         assert found is not None
-        assert found[2].human_reviewed is False
-        assert found[2].reviewed_by is None
+        assert found.human_reviewed is False
+        assert found.reviewed_by is None
 
 
 def test_mark_reviewed_raises_for_unknown_event_id(tmp_path):

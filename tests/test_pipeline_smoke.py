@@ -328,6 +328,41 @@ def test_analyze_node_classifies_conjunction_severity_by_distance(
     assert finding.severity == expected_severity
     assert finding.confidence == 0.8
     assert finding.description == "Stubbed anomaly commentary: nothing to report."
+    assert finding.severity_source == "distance-threshold"
+
+
+def test_analyze_node_uses_real_pc_when_a_cdm_was_matched():
+    """A real Space-Track CDM match (src/ingestion/cdm_enrichment.py)
+    merges collision_probability into raw_data - analyze_node must prefer
+    it over the distance threshold, and record which path was used."""
+    event = _make_conjunction_event(min_distance_km=250.0)  # would be NOMINAL by distance alone
+    event.raw_data["collision_probability"] = 2e-3  # well above the CRITICAL Pc threshold
+    analyze_node = make_analyze_node(FakeGemmaClient())
+
+    result_state = analyze_node({
+        "telemetry": event, "finding": None, "decision": None, "log_path": None,
+    })
+
+    finding = result_state["finding"]
+    assert finding.severity == Severity.CRITICAL
+    assert finding.severity_source == "probability-of-collision"
+
+
+def test_analyze_node_severity_source_is_none_for_non_conjunction_hazards():
+    decay_event = TelemetryEvent(
+        event_id="decay-1", timestamp=datetime.now(timezone.utc), source="celestrak-decay",
+        raw_data={
+            "object_id": "1", "object_name": "TEST OBJ",
+            "perigee_altitude_km": 250.0, "apogee_altitude_km": 400.0, "bstar": 0.0001,
+        },
+    )
+    analyze_node = make_analyze_node(FakeGemmaClient())
+
+    result_state = analyze_node({
+        "telemetry": decay_event, "finding": None, "decision": None, "log_path": None,
+    })
+
+    assert result_state["finding"].severity_source is None
 
     provenance = result_state["description_provenance"]
     assert provenance.source == "gemma"

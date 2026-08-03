@@ -71,6 +71,12 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     if "object_a_name" in raw and "object_b_name" in raw:
         subject = f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
+        if entry.finding.severity_source == "probability-of-collision":
+            # A real Space-Track CDM was matched to this conjunction (see
+            # src/ingestion/cdm_enrichment.py) - severity came from a real
+            # Pc, not the distance threshold, and that's worth surfacing
+            # right in the subject line rather than only in the raw log.
+            subject += f" [Pc={raw['collision_probability']:.2e}]"
     elif "perigee_altitude_km" in raw:
         # Decay hazard (Phase 14) - single object, not a pair. Checked by
         # its own distinguishing field, not just "object_name", since the

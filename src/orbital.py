@@ -16,6 +16,24 @@ from skyfield.api import EarthSatellite
 from skyfield.timelib import Timescale
 
 
+# WGS-72 equatorial radius (km) - the reference ellipsoid SGP4 itself
+# uses, so this is the right constant to pair with sat.model's altitudes
+# (already expressed in Earth radii, not the WGS-84 figure used for
+# real-world mapping elsewhere in this project's display code).
+EARTH_RADIUS_KM = 6378.135
+
+
+def perigee_apogee_altitude_km(sat: EarthSatellite) -> tuple[float, float]:
+    """Real perigee/apogee altitude (km), straight from Skyfield's own
+    already-parsed SGP4 model - originally written for src/decay.py
+    (Phase 14), promoted here once src/catalog_screening.py (Phase 3 of
+    ROADMAP_TO_PRODUCT.md) became a second real consumer that needed the
+    exact same values, matching this project's established "a genuine
+    second consumer justifies sharing code, not duplicating it" practice
+    (see tle_source.py's own promotion history)."""
+    return sat.model.altp * EARTH_RADIUS_KM, sat.model.alta * EARTH_RADIUS_KM
+
+
 def parse_norad_id(tle_line1: str) -> str:
     """Extract the NORAD catalog number from columns 3-7 of TLE line 1."""
     return tle_line1[2:7].strip()

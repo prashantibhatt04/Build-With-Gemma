@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -41,9 +41,40 @@ class Settings:
     # entirely - a no-op, not an error, so existing tests/demos are
     # unaffected unless someone explicitly configures one.
     alert_webhook_url: str = ""
+    # Space-Track.org credentials (see ROADMAP_TO_PRODUCT.md Phase 1) - a
+    # real free account, registered by a human at
+    # https://www.space-track.org/auth/createAccount, not something this
+    # project can obtain automatically. Both default empty: SpaceTrackAdapter
+    # (src/ingestion/spacetrack_adapter.py) raises a clear configuration
+    # error if constructed without them, same "absent = explicit, not a
+    # silent no-op" treatment as GEMMA_API_KEY when GEMMA_BACKEND=api -
+    # CelesTrakAdapter stays the always-available, no-credentials default.
+    spacetrack_username: str = ""
+    spacetrack_password: str = ""
+    # Postgres connection string (see ROADMAP_TO_PRODUCT.md Phase 4), e.g.
+    # "postgresql://user:pass@host:5432/dbname". Empty (the default) keeps
+    # DecisionLogger on its original append-only JSONL-file backend -
+    # same "absent = fallback to the existing default, not an error"
+    # pattern as every other optional integration in this project. Only
+    # storage changes when this is set - DecisionLogger's public interface
+    # (log/find_entry/load_all_entries/mark_reviewed/approve_maneuver) is
+    # identical either way, so nothing downstream (dashboard, RAG, trends,
+    # alerting) needs to know or care which backend is active.
+    database_url: str = ""
+    # Real operator authentication for scripts/dashboard.py (see
+    # src/auth.py) - "name:token,name2:token2". Empty (the default)
+    # leaves the dashboard's operator field as free text, same as before
+    # this phase - configuring this is what actually closes the "anyone
+    # can claim to be anyone" gap for approve/reject/mark-reviewed.
+    operator_tokens: dict[str, str] = field(default_factory=dict)
 
 
 def load_settings() -> Settings:
+    # Local import to avoid a circular import at module load time
+    # (src/auth.py has no reason to depend on config.py itself, but
+    # config.py is imported very early by nearly everything else).
+    from .auth import parse_operator_tokens
+
     return Settings(
         gemma_backend=os.getenv("GEMMA_BACKEND", "ollama"),
         gemma_model=os.getenv("GEMMA_MODEL", "gemma4:e4b"),
@@ -54,6 +85,10 @@ def load_settings() -> Settings:
         delta_v_budget_m_s=float(os.getenv("DELTA_V_BUDGET_M_S", "5.0")),
         gemma_embed_model=os.getenv("GEMMA_EMBED_MODEL", "nomic-embed-text"),
         alert_webhook_url=os.getenv("ALERT_WEBHOOK_URL", ""),
+        spacetrack_username=os.getenv("SPACETRACK_USERNAME", ""),
+        spacetrack_password=os.getenv("SPACETRACK_PASSWORD", ""),
+        database_url=os.getenv("DATABASE_URL", ""),
+        operator_tokens=parse_operator_tokens(os.getenv("OPERATOR_TOKENS", "")),
     )
 
 

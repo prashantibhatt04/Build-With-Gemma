@@ -85,3 +85,33 @@ def send_critical_alert(entry: DecisionLogEntry, settings: Settings = default_se
     except requests.RequestException as exc:
         print(f"WARNING: CRITICAL alert webhook failed for {entry.telemetry.event_id}: {exc}")
         return False
+
+
+def send_health_alert(message: str, settings: Settings = default_settings) -> bool:
+    """A real webhook POST about the SYSTEM's own health - e.g.
+    scripts/scheduler.py firing this after several consecutive tick
+    failures (ROADMAP_TO_PRODUCT.md Phase 5). Distinct from
+    send_critical_alert on purpose: a CRITICAL conjunction alert says "a
+    real risk was found"; this says "the thing that's supposed to be
+    finding risks might not be working" - an operator who only ever
+    wired up the first kind would have no way to learn the second thing
+    ever happened. Same webhook URL/mechanism (a small real deployment
+    plausibly wants both kinds of alert in the same channel), same
+    fail-safe behavior (never raises - a health-alerting failure must not
+    also take down the process it's trying to report on), but a visibly
+    different message prefix so the two are never confused for each
+    other in a shared channel."""
+    if not settings.alert_webhook_url:
+        return False
+
+    try:
+        response = requests.post(
+            settings.alert_webhook_url,
+            json={"text": f"⚠️ SYSTEM HEALTH: {message}"},
+            timeout=WEBHOOK_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return True
+    except requests.RequestException as exc:
+        print(f"WARNING: system health alert webhook failed: {exc}")
+        return False

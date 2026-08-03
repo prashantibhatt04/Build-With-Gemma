@@ -5,11 +5,12 @@ import itertools
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from skyfield.api import EarthSatellite, load
 
-from ..orbital import build_coarse_times, coarse_min_distance, compute_coarse_positions, parse_norad_id, parse_tle_epoch, refine_closest_approach
+from ..catalog_screening import apogee_perigee_overlap_pairs
+from ..orbital import build_coarse_times, coarse_min_distance, compute_coarse_positions, parse_norad_id, parse_tle_epoch, perigee_apogee_altitude_km, refine_closest_approach
 from ..schemas import TelemetryEvent
 from .base_adapter import DataSourceAdapter
 from .tle_source import DEFAULT_CACHE_DIR, fetch_tle_group_text, parse_tle_blocks
@@ -77,10 +78,26 @@ class CelesTrakAdapter(DataSourceAdapter):
     get refined too, as a union with the top-refine_top_k overall, rather
     than leaving cross-group representation to chance.
 
+    Before step 2 above even runs, ALL pairs are first passed through
+    catalog_screening.apogee_perigee_overlap_pairs (ROADMAP_TO_PRODUCT.md
+    Phase 3) - two objects whose orbital altitude ranges (perigee to
+    apogee) never overlap can never be close to each other regardless of
+    where either is right now, so there's no reason to spend even a cheap
+    coarse-distance calculation on that pair. This is what makes
+    `sample_size_per_group` scale meaningfully past a few hundred objects
+    instead of hitting an O(n^2) wall - see catalog_screening.py's own
+    module docstring for the real, measured benchmark.
+
     The raw TLE text for each group is cached to disk for up to an hour
     (CelesTrak asks users to go easy on request volume, and there's no
     reason to refetch on every call during dev/testing).
     """
+
+    # Overridden by SpaceTrackAdapter (src/ingestion/spacetrack_adapter.py)
+    # so events from a credentialed Space-Track scan are never mistaken
+    # for CelesTrak's public data downstream - same "source is always
+    # explicit" discipline as every other hazard/adapter in this project.
+    SOURCE_LABEL = "celestrak"
 
     def __init__(
         self,
@@ -92,8 +109,20 @@ class CelesTrakAdapter(DataSourceAdapter):
         cache_dir: Path | str = DEFAULT_CACHE_DIR,
         exclude_within_group: Sequence[str] = DEFAULT_EXCLUDE_WITHIN_GROUP,
         run_id: Optional[str] = None,
+        fetch_group_fn: Callable[[str, Path], str] = fetch_tle_group_text,
+        ap_filter_margin_km: float = 0.0,
     ):
         self.groups = list(groups)
+        # See catalog_screening.apogee_perigee_overlap_pairs's own
+        # docstring for what this trades off - 0.0 (the default) is the
+        # maximally strict/fast choice, appropriate for this project's
+        # modest 48h default lookahead window.
+        self.ap_filter_margin_km = ap_filter_margin_km
+        # Defaults to CelesTrak's public fetch; SpaceTrackAdapter passes a
+        # closure over a real authenticated SpaceTrackClient instead - the
+        # entire ranking/screening algorithm below is otherwise identical
+        # and shared, not duplicated, between both real data sources.
+        self.fetch_group_fn = fetch_group_fn
         self.sample_size_per_group = sample_size_per_group
         self.refine_top_k = refine_top_k
         self.min_cross_group_refine = min_cross_group_refine
@@ -122,7 +151,7 @@ class CelesTrakAdapter(DataSourceAdapter):
         sample_size_per_group real objects from each configured group."""
         sample = []
         for group in self.groups:
-            text = fetch_tle_group_text(group, self.cache_dir)
+            text = self.fetch_group_fn(group, self.cache_dir)
             group_sample = parse_tle_blocks(text)[: self.sample_size_per_group]
             sample.extend((name, l1, l2, group) for name, l1, l2 in group_sample)
         return sample
@@ -142,8 +171,17 @@ class CelesTrakAdapter(DataSourceAdapter):
             compute_coarse_positions(sat, self.ts, coarse_times) for sat in satellites
         ]
 
+        # Real orbital altitude ranges - a static property already parsed
+        # by Skyfield's SGP4 model, no propagation needed (unlike
+        # coarse_positions above). See catalog_screening.py's module
+        # docstring for why this eliminates the O(n^2) wall before it
+        # ever forms, not just after.
+        altitude_ranges = [perigee_apogee_altitude_km(sat) for sat in satellites]
+        candidate_pairs = apogee_perigee_overlap_pairs(altitude_ranges, margin_km=self.ap_filter_margin_km)
+        total_possible_pairs = len(satellites) * (len(satellites) - 1) // 2
+
         all_pairs = [
-            (i, j) for i, j in itertools.combinations(range(len(satellites)), 2)
+            (i, j) for i, j in candidate_pairs
             # Skip pairs within an excluded same-role group (default:
             # "stations", whose docked vehicles sit at ~0km on purpose -
             # see DEFAULT_EXCLUDE_WITHIN_GROUP) before they ever cost
@@ -205,6 +243,11 @@ class CelesTrakAdapter(DataSourceAdapter):
         self.last_scan_stats = {
             "groups": list(self.groups),
             "total_objects": len(satellites),
+            # Every pair that WOULD have been screened pre-Phase-3 (plain
+            # itertools.combinations) - kept for direct before/after
+            # comparison, not used for anything downstream.
+            "total_possible_pairs": total_possible_pairs,
+            "pairs_after_ap_filter": len(candidate_pairs),
             "total_pairs_screened": len(all_pairs),
             "pairs_refined": len(to_refine),
             "cross_group_pairs_refined": sum(
@@ -220,7 +263,7 @@ class CelesTrakAdapter(DataSourceAdapter):
             TelemetryEvent(
                 event_id=f"conj-{c['object_a_id']}-{c['object_b_id']}-{self.run_id}",
                 timestamp=now,
-                source="celestrak",
+                source=self.SOURCE_LABEL,
                 raw_data=c,
             )
             for c in conjunctions[:limit]

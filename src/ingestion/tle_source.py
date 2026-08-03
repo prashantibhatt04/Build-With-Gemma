@@ -1,15 +1,20 @@
-"""Shared real CelesTrak TLE fetch/parse/cache logic, used by every
-adapter that needs raw TLE data (CelesTrakAdapter for pairwise conjunction
-screening, DecayRiskAdapter for per-object decay risk) - a single place
-for the fetch-with-disk-caching and TLE-block-parsing logic, instead of
-duplicating it per adapter.
+"""Shared real TLE fetch/parse/cache logic, used by every adapter that
+needs raw TLE data (CelesTrakAdapter for pairwise conjunction screening,
+DecayRiskAdapter for per-object decay risk, SpaceTrackAdapter as a
+credentialed alternative to CelesTrak - see ROADMAP_TO_PRODUCT.md Phase
+1) - a single place for the fetch-with-disk-caching and TLE-block-parsing
+logic, instead of duplicating it per adapter.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 import time
 
 import requests
+
+if TYPE_CHECKING:
+    from .spacetrack_client import SpaceTrackClient
 
 DEFAULT_CACHE_DIR = Path("data/tle_cache")
 CACHE_MAX_AGE_SECONDS = 60 * 60  # 1 hour
@@ -32,6 +37,78 @@ def fetch_tle_group_text(group: str, cache_dir: Path) -> str:
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     text = response.text
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(text)
+    return text
+
+
+def fetch_spacetrack_group_text(
+    name_pattern: str, client: "SpaceTrackClient", cache_dir: Path, group_slug: str,
+) -> str:
+    """Space-Track equivalent of fetch_tle_group_text above - same disk-
+    caching behavior (1 hour, one file per group), but sourced from a real
+    authenticated Space-Track GP-class query instead of CelesTrak's public
+    gp.php. CelesTrak has no server-side concept of "groups" beyond its
+    own curated named lists - the closest real equivalent on Space-Track
+    is a name-pattern filter on the GP class's OBJECT_NAME field, using
+    the documented `~~` ("like") predicate operator, e.g. "COSMOS 2251 DEB"
+    to match the real debris field CelesTrakAdapter's default group
+    already covers.
+
+    Returns the same 3-line-block TLE text format fetch_tle_group_text
+    does, so parse_tle_blocks needs no Space-Track-specific branch at
+    all - one parser, two real data sources. This requires requesting
+    Space-Track's `3le` format specifically, not `tle` - confirmed by a
+    real live query against this project's own Space-Track account
+    (ROADMAP_TO_PRODUCT.md Phase 1's live verification) that `format=tle`
+    returns bare 2-line elements with NO name line at all, unlike
+    CelesTrak's own `FORMAT=tle`, which always includes one. Feeding that
+    2-line stream through parse_tle_blocks (written and tested against a
+    3-line format) silently corrupted results: roughly half of all real
+    objects were dropped, and the rest had a neighboring object's orbital
+    element line substituted for their name. `3le` is the format that
+    actually includes a name line - prefixed with the literal "0 " by the
+    real CCSDS/spacetrack 3LE convention (confirmed live: "0 ISS
+    (ZARYA)"), which is stripped below so the parsed name matches
+    CelesTrak's own unprefixed convention exactly.
+
+    Cached separately from CelesTrak's cache files (a "spacetrack-"
+    prefix, keyed by group_slug rather than the raw name_pattern, since
+    the pattern itself may contain characters that aren't safe in a
+    filename) - the two sources are never assumed to return identical
+    results even for a similarly-named group, so sharing a cache entry
+    between them would be wrong.
+
+    Filters to DECAY_DATE/null-val (never decayed) and a recent EPOCH
+    (within the last 30 days) - a real bug found live-testing against an
+    actual account: unlike CelesTrak's curated, current-only groups,
+    Space-Track's raw GP class returns every historical elset ever
+    published for a matching name, including objects with decades-stale
+    epochs whose orbits have long since decayed. Propagating those
+    forward to "now" isn't just inaccurate, it's UNDEFINED - SGP4 breaks
+    down and silently returns NaN position for an orbit this far outside
+    its valid range, which would otherwise flow straight into
+    min_distance_km without any exception being raised. Confirmed live:
+    of 160 objects returned by an unfiltered `~~ISS` query, all but one
+    produced NaN; the same query with this filter returned 13 objects,
+    every one of which propagated cleanly.
+    """
+    cache_path = cache_dir / f"spacetrack-{group_slug}.txt"
+    if cache_path.exists():
+        age_seconds = time.time() - cache_path.stat().st_mtime
+        if age_seconds < CACHE_MAX_AGE_SECONDS:
+            return cache_path.read_text()
+
+    query_path = (
+        f"class/gp/OBJECT_NAME/~~{name_pattern}/DECAY_DATE/null-val/"
+        f"EPOCH/%3Enow-30/orderby/NORAD_CAT_ID/format/3le"
+    )
+    raw_text = client.query_text(query_path)
+    text = "\n".join(
+        line[2:] if line.startswith("0 ") else line
+        for line in raw_text.splitlines()
+    ) + "\n"
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(text)

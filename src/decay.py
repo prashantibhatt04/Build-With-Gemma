@@ -21,11 +21,7 @@ from __future__ import annotations
 
 from skyfield.api import EarthSatellite
 
-# WGS-72 equatorial radius (km) - the reference ellipsoid SGP4 itself
-# uses, so this is the right constant to pair with sat.model's altitudes
-# (which are already expressed in Earth radii, not the WGS-84 figure used
-# for real-world mapping elsewhere in this project's display code).
-EARTH_RADIUS_KM = 6378.135
+from .orbital import perigee_apogee_altitude_km
 
 
 def assess_decay_risk(
@@ -42,11 +38,12 @@ def assess_decay_risk(
     this naming difference is exactly what pipeline.analyze_node uses to
     tell a decay finding apart from a conjunction one.
     """
+    perigee_altitude_km, apogee_altitude_km = perigee_apogee_altitude_km(sat)
     return {
         "object_id": object_id,
         "object_name": object_name,
-        "perigee_altitude_km": sat.model.altp * EARTH_RADIUS_KM,
-        "apogee_altitude_km": sat.model.alta * EARTH_RADIUS_KM,
+        "perigee_altitude_km": perigee_altitude_km,
+        "apogee_altitude_km": apogee_altitude_km,
         "bstar": sat.model.bstar,
         "tle_epoch_age_hours": tle_epoch_age_hours,
     }

@@ -22,6 +22,7 @@ from .gemma_client import GemmaClient, GemmaClientError
 from .ingestion.base_adapter import DataSourceAdapter, DummyAdapter
 from .logging_utils import DecisionLogger
 from .maneuver import DeltaVBudgetTracker, compute_avoidance_maneuver, verify_maneuver
+from .pc_severity import classify_pc_severity
 from .schemas import (
     Action,
     AnomalyFinding,
@@ -182,6 +183,20 @@ def classify_conjunction_severity(min_distance_km: float) -> Severity:
     return Severity.NOMINAL
 
 
+def classify_conjunction_finding(raw: dict) -> tuple[Severity, str]:
+    """Dispatches a conjunction to real Pc-based severity when a real
+    Space-Track CDM was matched to it (src/ingestion/cdm_enrichment.py
+    populates `collision_probability` in raw_data when that happens),
+    otherwise falls back to the existing distance threshold - see
+    ROADMAP_TO_PRODUCT.md Phase 2. Returns (severity, severity_source) so
+    callers can record which path actually produced the severity, never
+    silently blending the two."""
+    collision_probability = raw.get("collision_probability")
+    if collision_probability is not None:
+        return classify_pc_severity(collision_probability), "probability-of-collision"
+    return classify_conjunction_severity(raw["min_distance_km"]), "distance-threshold"
+
+
 def classify_decay_severity(perigee_altitude_km: float) -> Severity:
     """Deterministic perigee-altitude-based severity for the decay hazard
     (see src/decay.py) - not Gemma-derived, matching
@@ -308,8 +323,9 @@ def make_analyze_node(client: GemmaClient):
         perigee_altitude_km = raw.get("perigee_altitude_km")
         pointing_error_deg = raw.get("pointing_error_deg")
 
+        severity_source = None
         if min_distance_km is not None:
-            severity = classify_conjunction_severity(min_distance_km)
+            severity, severity_source = classify_conjunction_finding(raw)
             description, description_provenance = _conjunction_description(client, raw)
             confidence = compute_confidence(raw)
         elif perigee_altitude_km is not None:
@@ -335,6 +351,7 @@ def make_analyze_node(client: GemmaClient):
             severity=severity,
             description=description,
             confidence=confidence,
+            severity_source=severity_source,
         )
         return {**state, "finding": finding, "description_provenance": description_provenance}
 

@@ -38,6 +38,15 @@ class AnomalyFinding(BaseModel):
     severity: Severity
     description: str
     confidence: float = Field(ge=0.0, le=1.0)
+    # Which real signal actually produced `severity`, for conjunctions
+    # specifically: "probability-of-collision" (a real Space-Track CDM's
+    # COLLISION_PROBABILITY was available) or "distance-threshold" (no CDM
+    # available - see src/pc_severity.py). None for every non-conjunction
+    # hazard type (decay, attitude) and for conjunctions predating this
+    # field. Exists so the two conjunction-severity paths are always
+    # distinguishable in the audit log, never silently blended - see
+    # ROADMAP_TO_PRODUCT.md Phase 2.
+    severity_source: Optional[str] = None
 
 
 class ManeuverPlan(BaseModel):

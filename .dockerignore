@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.mypy_cache/
+data/tle_cache/
+data/rag_cache/
+logs/
+.env
+.claude/
+local-demo.cast
+local-demo.gif
+local-demo.mp4

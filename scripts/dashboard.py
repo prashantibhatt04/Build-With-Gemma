@@ -48,12 +48,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
+from src.auth import authenticate
 from src.config import settings
 from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
 from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
 from src.ingestion.historical_adapter import HistoricalReplayAdapter
+from src.ingestion.spacetrack_adapter import EnrichedSpaceTrackAdapter
+from src.ingestion.spacetrack_client import SpaceTrackAuthError, SpaceTrackClient
 from src.ingestion.synthetic_adapter import SyntheticCriticalAdapter
 from src.gemma_client import GemmaClient
 from src.live_positions import build_live_globe_figure, fetch_live_positions
@@ -269,6 +272,46 @@ def _get_shared_client() -> GemmaClient:
     return st.session_state["gemma_client"]
 
 
+def _require_operator_identity() -> str:
+    """Real authentication gate (ROADMAP_TO_PRODUCT.md Phase 5) - see
+    src/auth.py's module docstring for why this exists. When
+    OPERATOR_TOKENS is configured, nothing else in this app renders until
+    a valid token is entered (st.stop() below), and the returned identity
+    is the one the token actually maps to - not free text a visitor
+    could type. When unconfigured, behavior is exactly what it was before
+    this phase (a free-text field), but with a visible warning instead of
+    a silent gap - an operator glancing at the page should be able to
+    tell whether "approved_by" actually means anything here."""
+    if not settings.operator_tokens:
+        st.warning(
+            "⚠️ Unauthenticated dashboard - OPERATOR_TOKENS is not configured, so "
+            "the operator name below is free text anyone with this page open can "
+            "set to anything. Set OPERATOR_TOKENS in .env before using this for "
+            "real approve/reject/review actions.",
+            icon="⚠️",
+        )
+        return st.sidebar.text_input("Operator name", value="dashboard-operator")
+
+    if "authenticated_operator" in st.session_state:
+        operator = st.session_state["authenticated_operator"]
+        st.sidebar.success(f"Signed in as **{operator}**")
+        if st.sidebar.button("Sign out"):
+            del st.session_state["authenticated_operator"]
+            st.rerun()
+        return operator
+
+    st.info("Enter your operator token to continue.")
+    token = st.text_input("Operator token", type="password")
+    if st.button("Sign in"):
+        operator = authenticate(token, settings.operator_tokens)
+        if operator is None:
+            st.error("Invalid token.")
+        else:
+            st.session_state["authenticated_operator"] = operator
+            st.rerun()
+    st.stop()
+
+
 def main() -> None:
     st.set_page_config(page_title="Deep Space Navigation - Mission Ops", layout="wide")
     st.title("Deep Space Navigation — Mission Ops Dashboard")
@@ -276,6 +319,8 @@ def main() -> None:
         "Live risk board and human-approval inbox over the real append-only audit log "
         "(logs/decisions-*.jsonl) - not a mock, not a second copy of the pipeline."
     )
+
+    operator = _require_operator_identity()
 
     client = _get_shared_client()
     logger = DecisionLogger(settings=settings)
@@ -285,7 +330,6 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Controls")
-        operator = st.text_input("Operator name", value="dashboard-operator")
         st.write(f"Configured Gemma backend: **{settings.gemma_backend}**")
         st.caption(
             "local (ollama) -> autonomous execution with Gemma's own GO/NO-GO veto review; "
@@ -310,6 +354,33 @@ def main() -> None:
                         f"{stats['total_objects']} objects ({stats['groups']})."
                     )
                 st.rerun()
+
+        if settings.spacetrack_username and settings.spacetrack_password:
+            if st.button("Fetch Space-Track conjunctions (real Pc when available)"):
+                try:
+                    with st.spinner("Screening real Space-Track data + checking for a real CDM match..."):
+                        st_client = SpaceTrackClient(settings.spacetrack_username, settings.spacetrack_password)
+                        adapter = EnrichedSpaceTrackAdapter(client=st_client)
+                        entries = run_once(adapter=adapter, client=client, logger=logger, limit=fetch_limit)
+                        stats = adapter.last_scan_stats
+                except SpaceTrackAuthError as exc:
+                    st.error(f"Space-Track authentication failed: {exc}")
+                except Exception as exc:  # noqa: BLE001 - report and let the user retry
+                    st.error(f"Couldn't fetch live Space-Track data: {exc}")
+                else:
+                    pc_count = sum(1 for e in entries if e.finding.severity_source == "probability-of-collision")
+                    if stats:
+                        st.success(
+                            f"Screened {stats['total_pairs_screened']} pairs across "
+                            f"{stats['total_objects']} objects ({stats['groups']}) - "
+                            f"{pc_count} classified by a real Pc, rest by distance threshold."
+                        )
+                    st.rerun()
+        else:
+            st.caption(
+                "Space-Track screening (real Pc severity when a CDM matches) is available once "
+                "SPACETRACK_USERNAME/SPACETRACK_PASSWORD are set in .env."
+            )
 
         if st.button("Run synthetic CRITICAL scenario"):
             try:

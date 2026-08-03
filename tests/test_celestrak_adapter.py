@@ -1,31 +1,40 @@
 """Tests for src/ingestion/celestrak_adapter.py. The network call is mocked
-throughout - these never hit CelesTrak. The mocked response text is a real,
-small TLE sample (3 objects, fixed fixtures reused from test_orbital.py)
-so parsing/caching/pairwise logic is exercised for real.
+throughout - these never hit CelesTrak. The mocked response text is a
+fixed TLE sample (5 objects) sharing a common ~400-408km LEO altitude
+band, so every pair's altitude ranges genuinely overlap and survives
+Phase 3's real apogee/perigee filter (see src/catalog_screening.py) -
+each object is a small RAAN/mean-anomaly perturbation of the real ISS
+(ZARYA) TLE used elsewhere in this suite, the same way a real debris
+cluster from one breakup event shares its parent's orbital regime.
+Distinct RAAN/mean anomaly still gives each pair a real, distinct
+closest-approach result under propagation, so parsing/caching/pairwise
+logic is still exercised for real, just with physically plausible inputs
+now that screening actually checks plausibility.
 """
 from unittest.mock import MagicMock, patch
 
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 
-SAMPLE_TLE_TEXT = """VANGUARD 1
-1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753
-2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667
-ISS (ZARYA)
-1 25544U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
-2 25544  51.6402 181.0633 0004018  88.8954  22.2246 15.54059185113452
-THIRD TEST SAT
-1 04632U 70093B   04031.91070959 -.00000084  00000-0  10000-3 0  9955
-2 04632  11.4628 273.1101 1450506 207.6000 143.9350  1.20231981 44145
+SAMPLE_TLE_TEXT = """TEST SAT A
+1 30001U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30001  51.6402 175.0000 0004018  88.8954 100.0000 15.54059185113452
+TEST SAT B
+1 30002U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30002  51.6402 190.0000 0004018  88.8954 200.0000 15.54059185113452
+TEST SAT C
+1 30003U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30003  51.6402 160.0000 0004018  88.8954 300.0000 15.54059185113452
 """
 
-# A second, disjoint group's worth of real TLEs (2 more real fixtures), for
-# the multi-group cross-screening tests below.
-OTHER_GROUP_TLE_TEXT = """LAGEOS 1
-1 08820U 76039A   26100.50000000  .00000001  00000-0  00000-0 0  9990
-2 08820 109.8434  50.0000 0044000  90.0000 270.0000  6.38664960123456
-LAGEOS 2
-1 22195U 92070B   26100.50000000  .00000001  00000-0  00000-0 0  9991
-2 22195  52.6435  60.0000 0013000 100.0000 260.0000 6.47294050223456
+# A second, disjoint group's worth of TLEs (2 more), for the multi-group
+# cross-screening tests below - same shared altitude band as SAMPLE_TLE_TEXT
+# above, so cross-group pairs genuinely overlap too.
+OTHER_GROUP_TLE_TEXT = """OTHER SAT D
+1 30004U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30004  51.6402 210.0000 0004018  88.8954  50.0000 15.54059185113452
+OTHER SAT E
+1 30005U 98067A   18135.61844383  .00002728  00000-0  48567-4 0  9998
+2 30005  51.6402 145.0000 0004018  88.8954 150.0000 15.54059185113452
 """
 
 
@@ -165,6 +174,8 @@ def test_fetch_batch_refine_top_k_bounds_expensive_refinement(mock_get, tmp_path
     assert adapter.last_scan_stats == {
         "groups": ["test-group"],
         "total_objects": 3,
+        "total_possible_pairs": 3,
+        "pairs_after_ap_filter": 3,  # all 3 share the same altitude band - none eliminated
         "total_pairs_screened": 3,
         "pairs_refined": 1,
         "cross_group_pairs_refined": 0,  # single group - no cross-group pairs exist

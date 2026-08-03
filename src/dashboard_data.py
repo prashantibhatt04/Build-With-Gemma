@@ -50,6 +50,8 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
             "min_distance_km": raw.get("min_distance_km"),
             "perigee_altitude_km": raw.get("perigee_altitude_km"),
             "pointing_error_deg": raw.get("pointing_error_deg"),
+            "collision_probability": raw.get("collision_probability"),
+            "severity_source": entry.finding.severity_source,
             "status": STATUS_LABELS.get(status, status),
             "rationale_source": entry.rationale_provenance.source,
             "human_reviewed": entry.human_reviewed,

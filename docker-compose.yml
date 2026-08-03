@@ -1,0 +1,91 @@
+# Real deployment bundle - ROADMAP_TO_PRODUCT.md Phases 4/5/6. Four
+# services: a real Postgres instance (src/postgres_logging.py - Phase 4),
+# the dashboard, the continuous scheduler (scripts/scheduler.py - Phase
+# 4), and the REST API (scripts/api.py - Phase 6), all sharing the same
+# audit log via the same database. Nothing here is a mock or a
+# simplified stand-in for local dev - this is the same code every other
+# phase already live-verified, just packaged to run unattended instead
+# of from a terminal.
+#
+# Secrets (GEMMA_API_KEY, SPACETRACK_USERNAME/PASSWORD, OPERATOR_TOKENS,
+# ALERT_WEBHOOK_URL, ...) come from a real .env file via env_file - never
+# baked into the image, never committed (.env is gitignored - see
+# .env.example for the real list of variables). DATABASE_URL is
+# deliberately NOT read from .env here: it's built from POSTGRES_* below
+# and points at the `postgres` service by its Docker-internal hostname,
+# since a host-oriented DATABASE_URL (postgresql://localhost/...) in a
+# developer's own .env for non-Docker local runs would be wrong inside a
+# container - the two environments need different values for the same
+# variable, so compose sets this one itself rather than trusting .env.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-build_with_gemma}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # No fallback default - a well-known default password (e.g.
+      # "postgres") is exactly the kind of silent gap this project's own
+      # operational-trust phase exists to close, not repeat. Compose
+      # refuses to start with a clear error if this isn't set in .env,
+      # rather than quietly running with a guessable password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env before running docker compose}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-build_with_gemma}
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    # A process explicitly meant to run continuously/unattended
+    # shouldn't need a human to notice and restart it after a real crash
+    # (an unhandled error escaping run_tick's own try/except, an OOM, a
+    # host reboot) - unless-stopped restarts it automatically but
+    # respects an intentional `docker compose stop`.
+    restart: unless-stopped
+    command: ["python", "scripts/scheduler.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-build_with_gemma}
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: ["uvicorn", "scripts.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-build_with_gemma}
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  app_data:
+  app_logs:

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.alerting import build_alert_text, send_critical_alert
+from src.alerting import build_alert_text, send_critical_alert, send_health_alert
 from src.config import Settings
 from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent
 
@@ -129,5 +129,37 @@ def test_send_critical_alert_returns_false_and_does_not_raise_on_network_failure
     entry = _conjunction_entry(Severity.CRITICAL)
 
     result = send_critical_alert(entry, _settings(alert_webhook_url="https://example.com/webhook"))
+
+    assert result is False  # did not raise
+
+
+@patch("src.alerting.requests.post")
+def test_send_health_alert_skips_when_no_webhook_configured(mock_post):
+    result = send_health_alert("scheduler down", _settings(alert_webhook_url=""))
+
+    assert result is False
+    mock_post.assert_not_called()
+
+
+@patch("src.alerting.requests.post")
+def test_send_health_alert_posts_a_distinct_prefix_from_critical_alerts(mock_post):
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+
+    result = send_health_alert(
+        "scheduler has failed 3 consecutive ticks", _settings(alert_webhook_url="https://example.com/webhook"),
+    )
+
+    assert result is True
+    payload = mock_post.call_args.kwargs["json"]
+    assert "SYSTEM HEALTH" in payload["text"]
+    assert "scheduler has failed 3 consecutive ticks" in payload["text"]
+    assert "CRITICAL" not in payload["text"]  # never confusable with a real conjunction alert
+
+
+@patch("src.alerting.requests.post")
+def test_send_health_alert_returns_false_and_does_not_raise_on_network_failure(mock_post):
+    mock_post.side_effect = requests.RequestException("connection refused")
+
+    result = send_health_alert("scheduler down", _settings(alert_webhook_url="https://example.com/webhook"))
 
     assert result is False  # did not raise

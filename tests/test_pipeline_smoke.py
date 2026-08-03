@@ -3,7 +3,7 @@ GemmaClient, no live network required.
 """
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1005,3 +1005,40 @@ def test_log_node_delegates_the_critical_check_to_send_critical_alert_itself(tmp
     result_state = log_node(_log_state(event, finding))
 
     assert result_state["log_path"] is not None
+
+
+@patch("src.alerting.requests.post")
+def test_log_node_suppresses_repeat_alert_for_the_same_still_critical_hazard(mock_post, tmp_path):
+    """Real end-to-end guard for the alert-fatigue gap found by a live PM/
+    customer review: scripts/scheduler.py's continuous operation
+    re-detects the SAME still-unresolved conjunction fresh on every tick
+    (a new event_id each time - see CelesTrakAdapter). Without
+    log_node actually threading the real logged history into
+    send_critical_alert's cooldown check, the same hazard would page an
+    operator every tick, indefinitely. Uses a real JSONLDecisionLogStore
+    (via tmp_path), not a mock, so this proves the real load_all_entries()
+    -> hazard_key() -> cooldown path actually works end to end."""
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+    settings = Settings(
+        gemma_backend="ollama", gemma_model="gemma4:e4b", ollama_host="http://localhost:11434",
+        gemma_api_key="", gemma_model_api="gemma-4-26b-a4b-it", log_dir=str(tmp_path),
+        delta_v_budget_m_s=5.0, alert_webhook_url="https://example.com/webhook",
+    )
+    logger = DecisionLogger(settings=settings)
+    log_node = make_log_node(logger)
+
+    # First tick: a fresh CRITICAL detection for object pair 1/2 - the
+    # first time this hazard has ever been seen, so it must alert.
+    first_event = _make_conjunction_event(2.5)
+    first_finding = _make_finding(Severity.CRITICAL, first_event)
+    log_node(_log_state(first_event, first_finding))
+    assert mock_post.call_count == 1
+
+    # Second tick: the SAME hazard (same object pair), re-detected with a
+    # brand-new event_id - a real scheduler tick shape. Must be suppressed.
+    second_event = _make_conjunction_event(2.4)
+    second_event.event_id = "conj-33779-33825-different-run"
+    second_finding = _make_finding(Severity.CRITICAL, second_event)
+    log_node(_log_state(second_event, second_finding))
+
+    assert mock_post.call_count == 1  # NOT called again

@@ -932,7 +932,14 @@ def make_log_node(logger: DecisionLogger):
         # src/alerting.py. A no-op unless ALERT_WEBHOOK_URL is configured
         # (logger.settings, the same Settings this pipeline run already
         # uses); never raises, so a webhook outage can't block logging.
-        send_critical_alert(entry, logger.settings)
+        # recent_critical_entries is only fetched for CRITICAL findings -
+        # send_critical_alert's own cooldown check (ALERT_COOLDOWN_HOURS)
+        # needs the real recent history to recognize a still-unresolved
+        # hazard re-detected on a later scheduler tick as the same one,
+        # not a new one to re-alert about; skipped entirely for the vast
+        # majority of (non-CRITICAL) findings, where it isn't needed.
+        recent_critical_entries = logger.load_all_entries() if finding.severity == Severity.CRITICAL else ()
+        send_critical_alert(entry, logger.settings, recent_critical_entries=recent_critical_entries)
         return {**state, "log_path": log_path}
 
     return log_node

@@ -978,3 +978,55 @@ tests (`tests/test_dashboard_app.py`), full suite: 402/402.
 Live-verified in a real running dashboard: confirmed the expander
 renders the exact real values from a real `Settings` singleton, both
 collapsed (accessibility tree) and expanded (screenshot).
+
+## Post-Phase-6 improvement — CRITICAL-alert cooldown (fixing alert fatigue)
+
+A fresh PM-then-customer review (explicitly scoped to find gaps beyond
+everything already documented above) surfaced a real defect in the
+continuous-operation + alerting features that were each already shipped
+individually but never tested *together* at real scheduler cadence:
+`scripts/scheduler.py` re-detects the same still-unresolved conjunction
+or at-risk object fresh on every tick (a new `event_id` each time - see
+`CelesTrakAdapter`/`DecayRiskAdapter`), and `src/alerting.py`'s
+`send_critical_alert` fired unconditionally on every CRITICAL-severity
+log entry. Combined, one still-open CRITICAL hazard would re-page a real
+operator every scheduler tick, indefinitely, until it happened to
+resolve on its own - the fastest way to make anyone mute or distrust the
+alert channel this project just built.
+
+Closed with `hazard_key()` (`src/alerting.py`) - a stable identity for
+the real underlying hazard, independent of the entry's own
+run/tick-specific `event_id`: a sorted object-id pair for conjunctions,
+`object_id` for decay/attitude. `send_critical_alert` gained an optional
+`recent_critical_entries` parameter and a 24-hour `ALERT_COOLDOWN_HOURS`
+- a CRITICAL finding sharing the same `hazard_key` as another CRITICAL
+alert within the cooldown window is suppressed; `src/pipeline.py`'s
+`log_node` fetches real recent history (`logger.load_all_entries()`,
+only when the finding is actually CRITICAL, to avoid the cost for the
+common case) and threads it through. A genuinely new/different hazard,
+or the same hazard once the cooldown has elapsed, still alerts
+normally - this isn't an acknowledge/resolve workflow (out of scope at
+this product's scale), just a real "once a day per unresolved hazard"
+ceiling.
+
+Honest limitation: the cooldown check scans the full logged history via
+`load_all_entries()` rather than a scoped store query - fine at this
+project's real demo/small-fleet scale (the same pattern the dashboard's
+own Trends view already uses), but a production deployment at real
+operator scale would want `DecisionLogStore` to support a proper
+indexed/filtered query instead.
+
+**Live-verified against a real local Ollama-backed pipeline, a real
+JSONL audit log, and a real local HTTP webhook receiver** (not mocked):
+ran the same synthetic CRITICAL hazard (object pair `99000`/`99010`)
+through `run_once()` twice with a shared `DecisionLogger`, simulating
+two scheduler ticks re-detecting the same still-unresolved conjunction.
+The real receiver logged exactly one POST total - the first tick's real
+Gemma-authored alert text, confirmed suppressed on the second.
+
+9 new tests across `tests/test_alerting.py` (`hazard_key` across all
+three hazard shapes, order-independence for conjunction pairs, cooldown
+suppression/expiry/non-interference, self-suppression exclusion) and
+`tests/test_pipeline_smoke.py` (a real `JSONLDecisionLogStore`-backed
+end-to-end test proving `log_node` actually wires real history into the
+cooldown check, not just a unit-level mock). Full suite: 411/411.

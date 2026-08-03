@@ -85,7 +85,13 @@ def _subject_for_entry(entry: DecisionLogEntry) -> str:
     alert line."""
     raw = entry.telemetry.raw_data
     if "object_a_name" in raw:
-        return f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
+        subject = f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
+        if "time_of_closest_approach" in raw:
+            # How close is only half the picture for a real operator
+            # deciding urgency - when matters just as much, and this is
+            # the alert an operator actually gets paged with.
+            subject += f", TCA {raw['time_of_closest_approach']}"
+        return subject
     if "perigee_altitude_km" in raw:
         return f"{raw['object_name']} (perigee {raw['perigee_altitude_km']:.0f}km)"
     if "pointing_error_deg" in raw:

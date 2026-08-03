@@ -1030,3 +1030,36 @@ suppression/expiry/non-interference, self-suppression exclusion) and
 `tests/test_pipeline_smoke.py` (a real `JSONLDecisionLogStore`-backed
 end-to-end test proving `log_node` actually wires real history into the
 cooldown check, not just a unit-level mock). Full suite: 411/411.
+
+## Post-Phase-6 improvement — surfacing time-of-closest-approach
+
+A second finding from the same fresh PM/customer review: `time_of_
+closest_approach` (TCA) was captured on every real conjunction event and
+already sent to Gemma's own prompts (`src/pipeline.py`), but never shown
+to the human looking at the result - `entries_to_rows`
+(`src/dashboard_data.py`), `render_entry` (`src/display.py`), and the
+webhook alert text (`src/alerting.py`) all surfaced *how close* a
+conjunction gets without ever saying *when*. That's arguably the more
+decision-relevant fact for a real operator - a 25km miss reads very
+differently 2 hours out than 2 days out, and there was previously no way
+to tell which from the dashboard, the terminal, or the page an operator
+actually gets alerted with.
+
+Closed by adding TCA to all three real surfaces: the dashboard's "All
+decisions" table gets a new `time_of_closest_approach` column (parsed to
+a real `datetime`, like the existing `timestamp` column, rather than
+left as a raw ISO string - `None` for decay/attitude rows, which have no
+conjunction to be close to); the terminal renderer's subject line gains
+a `[TCA ...]` suffix; the webhook alert text gains a `, TCA ...` suffix.
+Deliberately did NOT force a default sort order on the table - the
+existing chronological (oldest-scan-first) order is itself meaningful
+audit-log semantics, and Streamlit's dataframe already supports
+interactive column-header sorting, so an operator who wants "soonest
+TCA first" can already get it by clicking the new column header.
+
+4 new/extended tests across `tests/test_dashboard_data.py`,
+`tests/test_display.py`, and `tests/test_alerting.py`. Full suite:
+412/412. Live-verified in a real running dashboard (real accumulated
+log data, not fixtures): confirmed the new column renders real TCA
+values for conjunction rows and `None` for non-conjunction rows,
+side by side in the same table.

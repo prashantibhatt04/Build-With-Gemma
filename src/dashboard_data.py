@@ -4,6 +4,8 @@ src/preflight.py's checks are separated from scripts/run_demo.py's printing).
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from .display import classify_decision_status
 from .schemas import DecisionLogEntry
 
@@ -40,6 +42,15 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
             subject = raw["object_name"]
         else:
             subject = entry.telemetry.event_id
+        # Real, decision-relevant fact that used to reach Gemma's own
+        # prompts (see pipeline.py) but never a human looking at this
+        # table - a 25km miss distance means something very different 2
+        # hours out than 2 days out, and there was previously no way to
+        # tell which from the dashboard. Parsed to a real datetime (like
+        # the timestamp column above) rather than left as the raw ISO
+        # string, so the table sorts and displays it consistently -
+        # conjunction-only, so None for decay/attitude rows.
+        raw_tca = raw.get("time_of_closest_approach")
         rows.append({
             "timestamp": entry.telemetry.timestamp,
             "event_id": entry.telemetry.event_id,
@@ -47,6 +58,7 @@ def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
             "severity": entry.finding.severity.value,
             "action": entry.decision.action.value,
             "subject": subject,
+            "time_of_closest_approach": datetime.fromisoformat(raw_tca) if raw_tca else None,
             "min_distance_km": raw.get("min_distance_km"),
             "perigee_altitude_km": raw.get("perigee_altitude_km"),
             "pointing_error_deg": raw.get("pointing_error_deg"),

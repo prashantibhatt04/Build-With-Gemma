@@ -121,6 +121,10 @@ def test_render_entry_shows_severity_badge_and_rationale():
     assert "WATCH" in output
     assert "SAT-A vs SAT-B" in output
     assert "50.00km" in output
+    # How close is only half the picture - when matters just as much, and
+    # this was previously sent to Gemma's own prompts but never shown to
+    # the human reading this line.
+    assert "2026-08-02T00:00:00+00:00" in output
     assert "Test rationale" in output
     # No maneuver for WATCH - no panel should appear.
     assert "MANEUVER" not in output

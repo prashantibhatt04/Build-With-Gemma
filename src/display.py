@@ -71,6 +71,11 @@ def render_entry(console: Console, entry: DecisionLogEntry) -> None:
 
     if "object_a_name" in raw and "object_b_name" in raw:
         subject = f"{raw['object_a_name']} vs {raw['object_b_name']} ({raw['min_distance_km']:.2f}km)"
+        if "time_of_closest_approach" in raw:
+            # A 25km miss reads very differently 2 hours out vs. 2 days
+            # out - this was already sent to Gemma's own prompts (see
+            # pipeline.py) but never shown to the human reading this line.
+            subject += f" [TCA {raw['time_of_closest_approach']}]"
         if entry.finding.severity_source == "probability-of-collision":
             # A real Space-Track CDM was matched to this conjunction (see
             # src/ingestion/cdm_enrichment.py) - severity came from a real

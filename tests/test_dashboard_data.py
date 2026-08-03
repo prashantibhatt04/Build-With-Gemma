@@ -86,6 +86,11 @@ def test_entries_to_rows_maps_severity_status_and_subject():
     assert row["status"] == "executed (autonomous)"
     assert row["rationale_source"] == "gemma"
     assert row["human_reviewed"] is False
+    # Real, decision-relevant fact - how close is only half the picture,
+    # when matters just as much - parsed to a real datetime (not left as
+    # the raw ISO string) so the dashboard table sorts/displays it like
+    # the existing timestamp column.
+    assert row["time_of_closest_approach"] == datetime(2026, 8, 2, tzinfo=timezone.utc)
 
 
 def test_entries_to_rows_falls_back_to_event_id_for_non_conjunction():
@@ -131,6 +136,10 @@ def test_entries_to_rows_shows_object_name_for_decay_hazard():
     assert rows[0]["subject"] == "COSMOS 2251 DEB"
     assert rows[0]["min_distance_km"] is None
     assert rows[0]["perigee_altitude_km"] == 415.9
+    # TCA is a conjunction-only concept - a decay row has no closest
+    # approach to a specific other object, so this must stay None rather
+    # than crash or default to something misleading.
+    assert rows[0]["time_of_closest_approach"] is None
 
 
 def test_entries_to_rows_shows_object_name_for_attitude_hazard():

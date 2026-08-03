@@ -222,6 +222,19 @@ def test_build_alert_text_covers_conjunction_shape():
     assert "Recommendation: abort." in text
 
 
+def test_build_alert_text_includes_time_of_closest_approach_for_conjunctions():
+    """How close is only half the picture for a real operator deciding
+    urgency from the alert they get paged with - when matters just as
+    much (a 25km miss reads very differently 2 hours out vs. 2 days
+    out)."""
+    entry = _conjunction_entry(Severity.CRITICAL)
+    entry.telemetry.raw_data["time_of_closest_approach"] = "2026-08-05T17:07:49+00:00"
+
+    text = build_alert_text(entry)
+
+    assert "2026-08-05T17:07:49+00:00" in text
+
+
 def test_build_alert_text_covers_decay_shape():
     text = build_alert_text(_decay_entry())
     assert "COSMOS 2251 DEB" in text

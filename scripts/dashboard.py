@@ -50,7 +50,7 @@ import streamlit as st
 
 from src.auth import authenticate
 from src.config import settings
-from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, pending_approvals
+from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, needs_attention, pending_approvals
 from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
@@ -143,6 +143,40 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
                     logger.approve_maneuver(entry.telemetry.event_id, approved=False, approved_by=operator)
                 except ValueError as exc:
                     st.error(f"Couldn't reject this maneuver: {exc}")
+                else:
+                    st.rerun()
+
+
+def _render_needs_attention(logger: DecisionLogger, attention: list[DecisionLogEntry], operator: str) -> None:
+    """A real CRITICAL decay/attitude finding has no maneuver/approval
+    workflow of its own (see needs_attention's docstring,
+    src/dashboard_data.py) - there's no avoidance burn for "your perigee
+    is too low" or "you're tumbling" - so without a dedicated section
+    like this one, it was previously indistinguishable from NOMINAL/WATCH
+    noise in the "All decisions" table. "Acknowledge" reuses the same
+    mark_reviewed this dashboard's Inspect panel already uses - there's
+    no separate approve/reject decision to make here, just a real human
+    confirming they've seen it."""
+    st.subheader(f"Needs attention ({len(attention)})")
+    if not attention:
+        st.caption("No CRITICAL decay/attitude findings awaiting acknowledgment.")
+        return
+
+    for entry in attention:
+        raw = entry.telemetry.raw_data
+        subject = raw.get("object_name", entry.telemetry.event_id)
+        with st.container(border=True):
+            st.markdown(f"**{entry.telemetry.event_id}** — {subject}")
+            if "perigee_altitude_km" in raw:
+                st.write(f"Perigee altitude: {raw['perigee_altitude_km']:.1f} km")
+            elif "pointing_error_deg" in raw:
+                st.write(f"Pointing error: {raw['pointing_error_deg']:.1f}°")
+            st.caption(entry.decision.rationale)
+            if st.button("Acknowledge", key=f"acknowledge_{entry.telemetry.event_id}"):
+                try:
+                    logger.mark_reviewed(entry.telemetry.event_id, reviewed_by=operator)
+                except ValueError as exc:
+                    st.error(f"Couldn't acknowledge this finding: {exc}")
                 else:
                     st.rerun()
 
@@ -598,6 +632,8 @@ def main() -> None:
     _render_metrics(compute_metrics(entries))
     st.divider()
     _render_pending_approvals(logger, pending_approvals(entries), operator)
+    st.divider()
+    _render_needs_attention(logger, needs_attention(entries), operator)
     st.divider()
 
     _render_all_decisions_table(entries)

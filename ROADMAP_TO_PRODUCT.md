@@ -1117,3 +1117,48 @@ to "Showing 133 of 266", with every visible row confirmed
 `severity: critical`; the event dropdown showed a real labeled option
 (`[WATCH] COSMOS 2251 DEB vs COSMOS 2251 DEB — conj-33844-34008-
 b9fa2d42`) instead of a bare id.
+
+## Post-Phase-6 improvement — a "Needs attention" queue for CRITICAL decay/attitude findings
+
+The fourth and final finding from the same fresh PM/customer review:
+`decide_node` (`src/pipeline.py`) only ever computes a `maneuver_plan`
+for conjunction-shaped `raw_data` - there's no avoidance burn for "your
+perigee is too low" or "you're tumbling". A CRITICAL decay or attitude
+finding still gets a real deterministic `Action.ABORT` and real Gemma
+narration, but genuinely nothing else: no `pending_approvals` entry, no
+distinguishing flag anywhere - it sat as one row indistinguishable from
+NOMINAL/WATCH noise in the "All decisions" table unless an operator
+happened to filter for it (the filtering added in the previous
+improvement helps, but doesn't by itself surface it proactively).
+Conjunction CRITICALs already have a real workflow either way (a
+`pending_approvals` entry, or a full autonomous-execution/veto record) -
+decay/attitude genuinely had none.
+
+Closed with `needs_attention()` (`src/dashboard_data.py`): real CRITICAL
+findings where `maneuver_plan is None` (decay/attitude, never
+conjunction - those are excluded on purpose, already covered elsewhere)
+and `human_reviewed` is still `False`. Wired into a new "Needs
+attention" dashboard section, right below "Pending human approval" -
+each entry shows the real perigee altitude or pointing error and the
+real Gemma rationale, with an "Acknowledge" button that reuses
+`DecisionLogger.mark_reviewed` (the same acknowledgment mechanism the
+Inspect panel already provides) rather than inventing a second one.
+Acknowledging removes it from the queue - there's no separate
+approve/reject decision to make here, just a real human confirming
+they've seen it.
+
+7 new tests in `tests/test_dashboard_data.py` (includes CRITICAL decay/
+attitude, excludes conjunction CRITICALs with their own maneuver
+workflow, excludes already-reviewed entries, excludes non-CRITICAL
+severities) plus a dashboard-rendering test in `tests/test_dashboard_
+app.py`. Full suite: 426/426. Live-verified against the real running
+dashboard with real accumulated log data: the section rendered "Needs
+attention (4)" with four real unacknowledged CRITICAL attitude findings
+(from earlier live-verification runs in this same session) complete
+with real Gemma rationale text; clicking "Acknowledge" on one
+immediately called the real `mark_reviewed`, reran, and the count
+dropped to "Needs attention (3)" with that entry gone.
+
+This closes out the fresh PM/customer review that also produced the
+alert-cooldown, TCA-visibility, and dashboard-filtering improvements
+above - all four findings from that review are now closed.

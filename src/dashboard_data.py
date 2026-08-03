@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Sequence
 
 from .display import classify_decision_status
-from .schemas import DecisionLogEntry
+from .schemas import DecisionLogEntry, Severity
 
 STATUS_LABELS = {
     None: "no maneuver",
@@ -120,3 +120,30 @@ def filter_entries(
     if sources:
         filtered = [e for e in filtered if e.telemetry.source in sources]
     return filtered
+
+
+def needs_attention(entries: list[DecisionLogEntry]) -> list[DecisionLogEntry]:
+    """Real CRITICAL findings with no maneuver-approval workflow of their
+    own - decay/attitude hazards, where decide_node (src/pipeline.py)
+    only ever computes a maneuver_plan for conjunction-shaped raw_data
+    ("your perigee is too low" or "you're tumbling" has no avoidance burn
+    to propose). Without this, a CRITICAL decay/attitude finding is
+    logged with Action.ABORT and real Gemma narration but genuinely
+    nothing else - no pending_approvals entry, no distinguishing flag -
+    and sits as one row among NOMINAL/WATCH noise in the "All decisions"
+    table unless an operator happens to filter for it.
+
+    Deliberately excludes conjunction CRITICALs (maneuver_plan is not
+    None) - those already have their own real workflow (pending_approvals
+    for the human-approval path, or a full autonomous-execution/veto
+    record when self-approved), so listing them here too would be a
+    duplicate, not a genuinely different unmet need. Also excludes
+    already-reviewed entries (human_reviewed), the same acknowledgment
+    mechanism mark_reviewed already provides - once a human has looked at
+    it, it should stop needing attention."""
+    return [
+        e for e in entries
+        if e.finding.severity == Severity.CRITICAL
+        and e.decision.maneuver_plan is None
+        and not e.human_reviewed
+    ]

@@ -1,7 +1,7 @@
 """Tests for src/dashboard_data.py - pure transforms, no Streamlit involved."""
 from datetime import datetime, timezone
 
-from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, pending_approvals
+from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, needs_attention, pending_approvals
 from src.maneuver import compute_avoidance_maneuver, verify_maneuver
 from src.schemas import (
     AnomalyFinding,
@@ -314,3 +314,81 @@ def test_filter_entries_multiple_selected_values_are_an_or_within_each_dimension
     result = filter_entries([critical, watch, nominal], severities=["critical", "watch"])
 
     assert result == [critical, watch]
+
+
+def _decay_entry(event_id: str, severity: Severity, human_reviewed: bool = False) -> DecisionLogEntry:
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="celestrak-decay",
+        raw_data={
+            "object_id": "33821", "object_name": "COSMOS 2251 DEB",
+            "perigee_altitude_km": 150.0, "apogee_altitude_km": 200.0,
+            "bstar": 0.001, "tle_epoch_age_hours": 12.0,
+        },
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=severity, description="d", confidence=0.9)
+    decision = Decision(action="abort", rationale="r", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=_provenance(),
+        human_reviewed=human_reviewed,
+    )
+
+
+def _attitude_entry(event_id: str, severity: Severity) -> DecisionLogEntry:
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="synthetic-attitude-fixture",
+        raw_data={
+            "object_id": "99010", "object_name": "SYNTH-SAT",
+            "pointing_error_deg": 70.0, "angular_rate_deg_s": 4.5, "solar_panel_power_pct": 22.0,
+        },
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=severity, description="d", confidence=0.8)
+    decision = Decision(action="abort", rationale="r", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision, rationale_provenance=_provenance(),
+    )
+
+
+def test_needs_attention_includes_critical_decay_finding():
+    """Real gap this closes: a CRITICAL decay finding gets Action.ABORT
+    and real Gemma narration but no maneuver/approval machinery at all
+    (there's no avoidance burn for "your perigee is too low") - without
+    this, it was indistinguishable from NOMINAL/WATCH noise in the "All
+    decisions" table."""
+    entry = _decay_entry("decay-1", Severity.CRITICAL)
+
+    assert needs_attention([entry]) == [entry]
+
+
+def test_needs_attention_includes_critical_attitude_finding():
+    entry = _attitude_entry("attitude-1", Severity.CRITICAL)
+
+    assert needs_attention([entry]) == [entry]
+
+
+def test_needs_attention_excludes_conjunction_critical_with_its_own_maneuver_workflow():
+    """Conjunction CRITICALs already have a real workflow of their own
+    (pending_approvals, or a full autonomous-execution/veto record) -
+    listing them here too would be a duplicate, not a genuinely different
+    unmet need."""
+    plan = compute_avoidance_maneuver(object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0)
+    entry = _conjunction_entry(
+        "conj-1", Severity.CRITICAL, min_distance_km=2.0,
+        decision_overrides={"maneuver_plan": plan, "verified_clearance": verify_maneuver(2.0, plan)},
+    )
+
+    assert needs_attention([entry]) == []
+
+
+def test_needs_attention_excludes_already_reviewed_entries():
+    """Once a human has acknowledged (mark_reviewed) a decay/attitude
+    CRITICAL finding, it should stop needing attention - the same
+    acknowledgment mechanism the Inspect panel already provides."""
+    entry = _decay_entry("decay-1", Severity.CRITICAL, human_reviewed=True)
+
+    assert needs_attention([entry]) == []
+
+
+def test_needs_attention_excludes_non_critical_severities():
+    entry = _decay_entry("decay-1", Severity.WARNING)
+
+    assert needs_attention([entry]) == []

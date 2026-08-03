@@ -130,6 +130,17 @@ def test_dashboard_review_panel_event_dropdown_is_labeled_not_a_bare_event_id():
     assert all("[" in option and "]" in option for option in event_dropdown.options)
 
 
+def test_dashboard_shows_needs_attention_section():
+    """Real gap this closes: CRITICAL decay/attitude findings have no
+    maneuver-approval workflow of their own, so without a dedicated
+    section they'd be indistinguishable from NOMINAL/WATCH noise in the
+    "All decisions" table."""
+    at = AppTest.from_file(DASHBOARD_PATH)
+    at.run(timeout=30)
+
+    assert any("Needs attention" in h.value for h in at.subheader)
+
+
 def test_dashboard_shows_unauthenticated_warning_when_operator_tokens_unset():
     with _operator_tokens({}):
         at = AppTest.from_file(DASHBOARD_PATH)

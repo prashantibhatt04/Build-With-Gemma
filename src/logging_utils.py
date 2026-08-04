@@ -19,9 +19,57 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from pydantic import ValidationError
+
 from .config import Settings, settings as default_settings
 from .maneuver import verify_maneuver
 from .schemas import DecisionLogEntry, ManeuverApproval
+
+
+def _atomic_write_lines(path: Path, lines: list[str]) -> None:
+    """Writes lines to path atomically via write-to-a-temp-file-then-
+    os.replace, so a process kill mid-write (SIGKILL, OOM-kill, disk
+    full, container restart - all realistic for a real 24/7
+    scripts/scheduler.py or a Dockerized dashboard) can never leave path
+    itself in a torn/truncated state. os.replace's underlying rename()
+    is atomic at the filesystem level: any concurrent reader sees either
+    the complete old content or the complete new content, never a
+    half-written mix - unlike the previous seek(0)+write()+truncate()
+    in-place rewrite, which could leave one corrupted JSON line that
+    poisoned every OTHER, perfectly intact entry in the same file (every
+    reader here validates every line unconditionally - see
+    _parse_lines_tolerantly below for the other half of this fix)."""
+    tmp_path = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _safe_parse_line(path: Path, index: int, line: str) -> Optional[DecisionLogEntry]:
+    """Parses one line, returning None (with a printed warning, not a
+    crash) if it fails to validate - real defense against a real
+    corrupted-line failure mode: a torn write from before the atomic-
+    write fix above, a hand-edited file, or any other single-line
+    corruption. Without this, DecisionLogEntry.model_validate_json
+    raising on ONE bad line took down `load_all_entries` (the dashboard's
+    main table, the alert-cooldown history fetch in pipeline.py, every
+    read endpoint in scripts/api.py) and `find`/`update_if` for every
+    OTHER, perfectly intact entry in that same date-file - a total
+    outage of one day's audit log from a single bad line, not a lost
+    record."""
+    try:
+        return DecisionLogEntry.model_validate_json(line)
+    except ValidationError as exc:
+        print(f"WARNING: skipping corrupted log line {index} in {path}: {exc}")
+        return None
+
+
+def _parse_lines_tolerantly(path: Path, lines: list[str]) -> list[DecisionLogEntry]:
+    entries = []
+    for i, line in enumerate(lines):
+        entry = _safe_parse_line(path, i, line)
+        if entry is not None:
+            entries.append(entry)
+    return entries
 
 
 class DecisionLogStore(ABC):
@@ -76,8 +124,15 @@ class DecisionLogStore(ABC):
 
 class JSONLDecisionLogStore(DecisionLogStore):
     """The original backend: each DecisionLogEntry as one JSON line in a
-    dated file under log_dir. Append-only by design - update() is the one
-    intentional exception, rewriting a single matched line in place."""
+    dated file under log_dir. Append-only by design - update()/update_if()
+    are the one intentional exception, rewriting a single matched line in
+    place - but always via _atomic_write_lines (write-to-temp-then-rename),
+    never an in-place seek+write+truncate, so a process kill mid-rewrite
+    can't corrupt the file. Every read here also tolerates a single
+    already-corrupted line (from before this real bug was fixed, or any
+    other cause) via _parse_lines_tolerantly/_safe_parse_line, rather than
+    letting one bad line take down every other, perfectly intact entry in
+    the same file."""
 
     def __init__(self, log_dir: str):
         self.log_dir = log_dir
@@ -97,8 +152,8 @@ class JSONLDecisionLogStore(DecisionLogStore):
         for path in sorted(Path(self.log_dir).glob("decisions-*.jsonl")):
             lines = path.read_text(encoding="utf-8").splitlines()
             for i, line in enumerate(lines):
-                entry = DecisionLogEntry.model_validate_json(line)
-                if entry.telemetry.event_id == event_id:
+                entry = _safe_parse_line(path, i, line)
+                if entry is not None and entry.telemetry.event_id == event_id:
                     return path, i, entry
         return None
 
@@ -107,13 +162,7 @@ class JSONLDecisionLogStore(DecisionLogStore):
         return found[2] if found else None
 
     def update(self, event_id: str, updated_entry: DecisionLogEntry) -> None:
-        found = self._find_with_location(event_id)
-        if found is None:
-            raise ValueError(f"No logged decision found with event_id={event_id!r}")
-        path, line_index, _ = found
-        lines = path.read_text(encoding="utf-8").splitlines()
-        lines[line_index] = updated_entry.model_dump_json()
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.update_if(event_id, guard=lambda entry: None, mutate=lambda entry: updated_entry)
 
     def update_if(
         self,
@@ -121,25 +170,30 @@ class JSONLDecisionLogStore(DecisionLogStore):
         guard: Callable[[DecisionLogEntry], None],
         mutate: Callable[[DecisionLogEntry], DecisionLogEntry],
     ) -> DecisionLogEntry:
-        # An exclusive flock on the specific date-file, held across the
-        # whole read-check-write - real cross-process AND cross-thread
-        # mutual exclusion (flock is scoped to the open file description,
-        # so two separate opens of the same path from different threads
-        # or processes correctly contend for the same lock), unlike the
-        # separate find()-then-update() calls this replaces.
+        # Locks a STABLE, never-replaced ".lock" sidecar file, not the
+        # data file itself - real cross-process AND cross-thread mutual
+        # exclusion (flock is scoped to the open file description). This
+        # has to be a separate file: the data file's own content is
+        # replaced atomically below via _atomic_write_lines (os.replace,
+        # i.e. a real rename), and flock-ing a path that might get
+        # renamed out from under a concurrent waiter is a real, subtle
+        # bug of its own - a second caller that already opened the OLD
+        # inode before the rename would win its lock against a now-
+        # orphaned file and silently lose its write, never visible via
+        # the real path again. The lock file's own inode never changes,
+        # so that race can't happen here.
         for path in sorted(Path(self.log_dir).glob("decisions-*.jsonl")):
-            with open(path, "r+", encoding="utf-8") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                lines = f.read().splitlines()
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            with open(lock_path, "a", encoding="utf-8") as lock_f:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+                lines = path.read_text(encoding="utf-8").splitlines()
                 for i, line in enumerate(lines):
-                    entry = DecisionLogEntry.model_validate_json(line)
-                    if entry.telemetry.event_id == event_id:
+                    entry = _safe_parse_line(path, i, line)
+                    if entry is not None and entry.telemetry.event_id == event_id:
                         guard(entry)
                         updated = mutate(entry)
                         lines[i] = updated.model_dump_json()
-                        f.seek(0)
-                        f.write("\n".join(lines) + "\n")
-                        f.truncate()
+                        _atomic_write_lines(path, lines)
                         return updated
                 # Lock released when the `with` block exits below, before
                 # moving on to check the next file.
@@ -148,8 +202,7 @@ class JSONLDecisionLogStore(DecisionLogStore):
     def load_all(self) -> list[DecisionLogEntry]:
         entries = []
         for path in sorted(Path(self.log_dir).glob("decisions-*.jsonl")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                entries.append(DecisionLogEntry.model_validate_json(line))
+            entries.extend(_parse_lines_tolerantly(path, path.read_text(encoding="utf-8").splitlines()))
         return entries
 
 

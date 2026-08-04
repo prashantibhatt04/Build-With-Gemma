@@ -177,6 +177,23 @@ def _step_historical_replay(ctx: DemoContext) -> None:
         title_align="left",
         border_style="cyan",
     ))
+    # Real ambiguity this closes: render_entries below is the SAME real
+    # renderer used for live/synthetic events - for a CRITICAL finding
+    # it prints "AUTONOMOUS MANEUVER EXECUTED" in the exact same
+    # present-tense, no-caveat language whether the underlying event is
+    # live, synthetic, or (as here) a documented 2009 collision that
+    # already happened with no avoidance action, per the panel above. A
+    # first-time viewer could reasonably read that as "this system just
+    # fired a real burn against a 2009 collision." This bridge makes
+    # explicit what's actually true: it's this system's own deterministic
+    # pipeline evaluating the real documented prediction as if it had
+    # been watching in 2009, not a retroactive rewrite of history.
+    ctx.console.print(
+        "[dim]Everything below is this system's own deterministic pipeline "
+        "running against that real documented prediction, as if it had "
+        "been watching live in 2009 - showing what it WOULD have "
+        "recommended, not a rewrite of what actually happened above.[/dim]"
+    )
     render_entries(entries, console=ctx.console)
     ctx.console.print(
         f"\nThis system's deterministic threshold (<5km = CRITICAL) classified the "

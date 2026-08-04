@@ -1,5 +1,6 @@
 """Tests for DecisionLogger, including the human-review stub
 (find_entry/mark_reviewed). No network calls."""
+import os
 import threading
 from datetime import datetime, timezone
 
@@ -234,3 +235,80 @@ def test_load_all_entries_reflects_in_place_rewrites(tmp_path):
     assert len(entries) == 1
     assert entries[0].human_reviewed is True
     assert entries[0].reviewed_by == "alice"
+
+
+def _corrupt_one_line(tmp_path, bad_index: int) -> None:
+    """Directly truncates one real JSONL line to simulate a torn write
+    from a process kill mid-rewrite (SIGKILL, OOM-kill, disk full,
+    container restart) - the exact failure mode _atomic_write_lines
+    (src/logging_utils.py) now prevents for THIS process's own writes,
+    but real damage from before that fix (or any other single-line
+    corruption source) still needs to be survivable on read."""
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = tmp_path / f"decisions-{date_str}.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[bad_index] = lines[bad_index][: len(lines[bad_index]) // 2]  # torn mid-line
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_load_all_entries_skips_a_corrupted_line_instead_of_crashing(tmp_path, capsys):
+    """Real bug this closes: a single torn/corrupted JSONL line used to
+    raise an uncaught pydantic.ValidationError out of
+    DecisionLogEntry.model_validate_json, crashing load_all_entries
+    entirely - a total outage of that day's audit log (the dashboard's
+    main table, the alert-cooldown history fetch, every REST API read
+    endpoint) from ONE bad line, not just a lost record."""
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("good-1"))
+    logger.log(_make_entry("bad-entry"))
+    logger.log(_make_entry("good-2"))
+    _corrupt_one_line(tmp_path, bad_index=1)
+
+    entries = logger.load_all_entries()
+
+    assert [e.telemetry.event_id for e in entries] == ["good-1", "good-2"]
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_find_entry_tolerates_a_corrupted_line_for_a_different_entry(tmp_path):
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("good-1"))
+    logger.log(_make_entry("bad-entry"))
+    _corrupt_one_line(tmp_path, bad_index=1)
+
+    assert logger.find_entry("good-1") is not None
+    assert logger.find_entry("good-1").telemetry.event_id == "good-1"
+
+
+def test_mark_reviewed_tolerates_a_corrupted_line_for_a_different_entry(tmp_path):
+    """The real production path (mark_reviewed -> update_if) must be just
+    as tolerant of a corrupted OTHER line as the read paths above -
+    otherwise a single bad line would also block every future
+    approve/reject/review action for every OTHER entry in that file."""
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("good-1"))
+    logger.log(_make_entry("bad-entry"))
+    _corrupt_one_line(tmp_path, bad_index=1)
+
+    updated = logger.mark_reviewed("good-1", reviewed_by="alice")
+
+    assert updated.human_reviewed is True
+
+
+def test_update_if_writes_atomically_leaving_no_temp_file_behind(tmp_path):
+    """Real behavior this guards: update_if writes via a temp file +
+    os.replace (atomic rename), not an in-place seek+write+truncate - a
+    process kill between those two steps used to be able to leave the
+    real date-file itself half-written. Confirms the real on-disk
+    contract after a real call: the temp file is gone (renamed away) and
+    the real file has the real updated content."""
+    logger = DecisionLogger(settings=_settings(tmp_path))
+    logger.log(_make_entry("event-1"))
+
+    logger.mark_reviewed("event-1", reviewed_by="alice")
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    remaining_files = sorted(p.name for p in tmp_path.iterdir())
+    assert f"decisions-{date_str}.jsonl" in remaining_files
+    assert not any(name.endswith(f".tmp{os.getpid()}") for name in remaining_files)
+    assert logger.find_entry("event-1").human_reviewed is True

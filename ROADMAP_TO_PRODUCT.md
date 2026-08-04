@@ -1402,3 +1402,87 @@ choice honest rather than an accidental byproduct of disk cleanup - this
 also flips the demo's default flow from autonomous local execution to
 the human-approval path, arguably the more compelling story for an
 investor demo anyway.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 4: historical replay narration read as a real maneuver against a 2009 collision
+
+The same live-VC-demo-lens review found one more narrative
+inconsistency in `scripts/run_demo.py`'s historical replay step
+(Phase 12): the panel immediately before it explicitly says
+"HISTORICAL RECORD — NOT A LIVE RISK" and states what actually
+happened to Iridium 33/Cosmos 2251 in 2009 (no avoidance maneuver, a
+real collision). The very next thing printed - `render_entries`, the
+same real renderer used for every live/synthetic event - shows
+"AUTONOMOUS MANEUVER EXECUTED ... Verified new separation: 41.70km
+(cleared=True)" in the same present-tense, no-caveat language, with
+nothing distinguishing "this system's own deterministic pipeline
+evaluating the real documented prediction" from "a rewrite of what
+actually happened." A first-time viewer could reasonably wonder
+whether the tool just claimed to fire a real burn against a real 2009
+collision.
+
+Fixed with one explicit bridging sentence, printed between the
+historical-record panel and `render_entries`, rather than duplicating
+or special-casing `render_entries`' own shared, already-tested
+formatting logic: "Everything below is this system's own deterministic
+pipeline running against that real documented prediction, as if it had
+been watching live in 2009 - showing what it WOULD have recommended,
+not a rewrite of what actually happened above." Narration-only change;
+live-verified as part of the full demo re-run under `GEMMA_BACKEND=api`
+below rather than a synthetic unit test, since exercising it for real
+requires a real Gemma call `run_once` doesn't take a test-scoped logger
+for by default.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 5: a single corrupted JSONL line could crash the entire day's audit log
+
+A second, independent background review specifically hunting for
+"assumed X but the real implementation does Y" state/ordering bugs
+(the same class as the run_demo.py fix above) found a real, more
+severe version of a problem this project already partially addressed.
+`JSONLDecisionLogStore.update()`/`update_if()` (`src/logging_utils.py`,
+used by every real `mark_reviewed`/`approve_maneuver` call - i.e. every
+dashboard or API approve/reject/review click) rewrote the WHOLE
+date-file in place via `seek(0)` + `write()` + `truncate()`. If the
+process is killed mid-write - SIGKILL, an OOM-kill, disk full, a
+container restart - all realistic for a real 24/7 `scripts/scheduler.py`
+or a Dockerized dashboard - the file is left with one truncated JSON
+line. Every reader here (`load_all_entries` - the dashboard's main
+table, the alert-cooldown history fetch in `pipeline.py`, every read
+endpoint in `scripts/api.py` - plus `find_entry`/`update_if` themselves)
+validated every line unconditionally, so ONE corrupted line raised an
+uncaught `pydantic.ValidationError` that took down the WHOLE file - a
+total outage of that day's audit log, not a lost record, and
+`PostgresDecisionLogStore` has no equivalent failure mode (JSONB is
+validated per-row at write time), so the two backends this project
+promises are interchangeable weren't actually equivalent under this
+real failure class.
+
+Closed with two complementary real fixes in `src/logging_utils.py`:
+
+1. **`_atomic_write_lines()`** - every rewrite now goes through a
+   write-to-a-temp-file-then-`os.replace()` (a real atomic rename at
+   the filesystem level), never an in-place `seek`/`write`/`truncate`,
+   so a process kill mid-write can no longer corrupt the real file at
+   all. `update_if()`'s locking moved from flock-ing the data file
+   itself to a stable, never-replaced `.lock` sidecar file - flock-ing
+   a path that's about to be atomically replaced is a real, subtle
+   second bug of its own (a concurrent caller that already opened the
+   OLD inode before the rename would win its lock against a now-
+   orphaned file and silently lose its write).
+2. **`_safe_parse_line()`/`_parse_lines_tolerantly()`** - defense for
+   damage from BEFORE this fix (or any other single-line corruption
+   source): every reader now skips one bad line with a printed warning
+   instead of crashing, so the rest of a real day's log stays fully
+   readable no matter what.
+
+`update()` (previously unlocked and non-atomic, though it has no real
+production caller today - only `update_if` does, via
+`mark_reviewed`/`approve_maneuver`) now delegates to `update_if()`
+internally, so both get the same real safety for free instead of two
+separately-maintained rewrite paths.
+
+6 new tests in `tests/test_logging_utils.py`: a real corrupted-line
+simulation (truncating an actual logged line mid-write) confirmed
+`load_all_entries`/`find_entry`/`mark_reviewed` all now survive it for
+every OTHER intact entry, plus a real on-disk check that no `.tmp*`
+file is left behind after a real `mark_reviewed` call. Full suite:
+447/447.

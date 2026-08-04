@@ -1292,3 +1292,36 @@ guard). Full suite: 438/438. Live-verified against a real running
 decisions) with real column headers and real data; filtering to
 `?severity=critical` correctly returned exactly the 135 real CRITICAL
 rows.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 1: run_demo.py's audit-trail step showed the wrong entry
+
+A fresh sweep specifically framed around live-demo readiness (would this
+embarrass a presenter in front of an audience?) started by actually
+running `python scripts/run_demo.py --auto` end to end, not just reading
+the script. Step 9 ("The audit trail itself") narrates "this step shows
+the actual persisted record for the most recent decision (the one just
+marked reviewed above)" - but a real run showed a DIFFERENT entry, an
+attitude finding with `"human_reviewed": false`, directly contradicting
+what was just said. The exact kind of inconsistency that reads as a
+broken product live, even though nothing was actually broken underneath.
+
+Root cause: `DecisionLogger.mark_reviewed` (the previous step) rewrites
+its entry's JSONL line IN PLACE - it does not move that line to the end
+of the file (see `update_if`, `src/logging_utils.py`). `_step_audit_trail`
+was reading `lines[-1]` (whatever was most recently *appended*), not the
+entry that was most recently *reviewed* - two different things whenever
+later steps log new entries after the reviewed one, which is exactly
+what happens in the demo's own real step order (decay/attitude events
+in steps 5-6, review in step 8).
+
+Fixed by looking the real reviewed entry up by its own `event_id`
+(`ctx.reviewable_event_id`, already tracked by the context) via
+`DecisionLogger.find_entry`, falling back to the old "last line" display
+only when no reviewable event exists for this run.
+
+2 new tests in a new `tests/test_run_demo.py` (the fix, and the
+fallback path). Full suite: 440/440. Live-verified by re-running the
+real demo end to end twice - before the fix, reproduced the real
+mismatch (shown above); after, confirmed Step 9 correctly displays the
+real reviewed conjunction entry with `"human_reviewed": true`, matching
+Step 8's own narration.

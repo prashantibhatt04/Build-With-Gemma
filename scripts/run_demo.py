@@ -286,9 +286,26 @@ def _step_audit_trail(ctx: DemoContext) -> None:
         return
     lines = log_files[-1].read_text().strip().splitlines()
     ctx.console.print(f"Log file: {log_files[-1]} ({len(lines)} lines total)")
-    if lines:
-        ctx.console.print("Most recent entry (raw, exactly as persisted):")
-        ctx.console.print_json(data=json.loads(lines[-1]))
+    if not lines:
+        return
+
+    if ctx.reviewable_event_id:
+        # Real bug this fixes: mark_reviewed (previous step) rewrites its
+        # entry's line IN PLACE (see logging_utils.py's update_if) - it
+        # does NOT move that line to the end of the file. So lines[-1] is
+        # whatever was most recently APPENDED, which in a real run is
+        # very likely a later decay/attitude event, not the entry that
+        # was just reviewed - directly contradicting this step's own
+        # narration ("the one just marked reviewed above"). Look the real
+        # entry up by its real event_id instead of assuming file order.
+        entry = DecisionLogger(settings=settings).find_entry(ctx.reviewable_event_id)
+        if entry is not None:
+            ctx.console.print("Most recently reviewed entry (raw, exactly as persisted):")
+            ctx.console.print_json(data=entry.model_dump(mode="json"))
+            return
+
+    ctx.console.print("Most recent entry (raw, exactly as persisted):")
+    ctx.console.print_json(data=json.loads(lines[-1]))
 
 
 def _step_test_suite(ctx: DemoContext) -> None:

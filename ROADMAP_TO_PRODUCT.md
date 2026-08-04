@@ -1486,3 +1486,49 @@ simulation (truncating an actual logged line mid-write) confirmed
 every OTHER intact entry, plus a real on-disk check that no `.tmp*`
 file is left behind after a real `mark_reviewed` call. Full suite:
 447/447.
+
+Also confirmed live, end to end, as part of a full real re-run of
+`scripts/run_demo.py` under `GEMMA_BACKEND=api` (the demo machine's
+newly-configured real backend, see fix 3 above): the historical-replay
+narration bridge renders correctly right between the panel and the
+maneuver output, the failover step now genuinely fires for real
+(`Backend that actually answered: api`) since it's no longer skipped
+under a local-only config, and the audit-trail entry still correctly
+shows the reviewed conjunction. Clean exit code, zero errors or
+tracebacks across the entire 11-step run.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 6: alert cooldown silently swallowed same-day repeat demo runs
+
+The same background review that found the torn-JSONL-write bug found a
+second real state bug in the alert-cooldown feature added earlier this
+session: `SyntheticCriticalAdapter`/`HistoricalReplayAdapter`
+deliberately reuse fixed object ids across every real invocation (only
+`event_id` gets a fresh `run_id`) - a real, correct design choice so
+each demo run's fixtures are recognizable. But `hazard_key()`
+(`src/alerting.py`) is deliberately derived from those same object ids,
+not `event_id`, specifically to collapse re-detections of a still-open
+REAL hazard across scheduler ticks. Combined, a second same-day "Run
+synthetic CRITICAL scenario" click - or re-running `scripts/run_demo.py`
+to rehearse a pitch - collapsed to the same `hazard_key` as the earlier
+run and got silently suppressed by `ALERT_COOLDOWN_HOURS`, with no
+error, log line, or UI indication of why. A deliberate, one-off demo
+action was being treated as "the same real hazard automatically
+re-detected by continuous scanning" - directly breaking the advertised
+real-time webhook alert on exactly the live-demo scenario this whole
+sweep is framed around.
+
+Closed with `_COOLDOWN_EXEMPT_SOURCES` (`src/alerting.py`) - a small
+denylist of known demo-only `telemetry.source` values
+(`synthetic-critical-fixture`, `synthetic-attitude-fixture`,
+`historical-replay`) that `_was_recently_alerted` now checks first and
+exempts entirely. Deliberately a denylist, not an allowlist of real
+sources: a new REAL source added later defaults to cooldown-PROTECTED
+(the safer failure mode - spamming real alerts is worse than an
+unwanted demo cooldown), while the exemption only ever widens to cover
+explicitly-named demo fixtures, never silently to something real.
+
+4 new tests in `tests/test_alerting.py`: a same-day repeat synthetic-
+CRITICAL run and a same-day repeat historical replay both confirmed to
+still alert (not suppressed), and a real `celestrak`-sourced repeat
+confirmed to still be suppressed exactly as before - the exemption is
+narrowly scoped, not a blanket disable. Full suite: 450/450.

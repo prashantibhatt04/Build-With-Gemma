@@ -99,6 +99,25 @@ def _subject_for_entry(entry: DecisionLogEntry) -> str:
     return entry.telemetry.event_id
 
 
+# Sources exempt from the cooldown below - a deliberate, one-off demo/
+# replay action (clicking "Run synthetic CRITICAL scenario" a second
+# time the same day, or re-running scripts/run_demo.py to rehearse a
+# pitch) is NOT "the same real hazard automatically re-detected by
+# continuous scanning" - the actual scenario ALERT_COOLDOWN_HOURS exists
+# to protect against (see hazard_key below). Without this, a second
+# same-day demo/replay run silently loses its webhook alert with no
+# error or UI indication of why - directly breaking the advertised
+# real-time alert feature on exactly the live-demo scenario this
+# project's own VC-demo-readiness review is framed around. Deliberately
+# a denylist of known demo-only sources, not an allowlist of real ones -
+# a new REAL source added later defaults to cooldown-PROTECTED (the
+# safer failure mode, since spamming real alerts is worse than an
+# unwanted demo cooldown).
+_COOLDOWN_EXEMPT_SOURCES = frozenset({
+    "synthetic-critical-fixture", "synthetic-attitude-fixture", "historical-replay",
+})
+
+
 def hazard_key(entry: DecisionLogEntry) -> str:
     """A stable identity for the real underlying hazard behind a finding -
     independent of entry.telemetry.event_id, which deliberately includes a
@@ -123,6 +142,8 @@ def _was_recently_alerted(
     recent_critical_entries: Iterable[DecisionLogEntry],
     cooldown_hours: float = ALERT_COOLDOWN_HOURS,
 ) -> bool:
+    if entry.telemetry.source in _COOLDOWN_EXEMPT_SOURCES:
+        return False
     key = hazard_key(entry)
     cutoff = entry.decision.made_at - timedelta(hours=cooldown_hours)
     return any(

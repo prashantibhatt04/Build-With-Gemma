@@ -78,7 +78,7 @@ def _attitude_entry() -> DecisionLogEntry:
 
 def _conjunction_entry_at(
     made_at: datetime, event_id: str = "conj-test-1", object_a_id: str = "1", object_b_id: str = "2",
-    severity: Severity = Severity.CRITICAL,
+    severity: Severity = Severity.CRITICAL, source: str = "celestrak",
 ) -> DecisionLogEntry:
     """Like _conjunction_entry above, but with a caller-controlled made_at
     and event_id/object ids - needed to build realistic "same hazard,
@@ -86,7 +86,7 @@ def _conjunction_entry_at(
     real re-detected hazard keeps its object ids but gets a fresh
     event_id/made_at every tick)."""
     telemetry = TelemetryEvent(
-        event_id=event_id, timestamp=made_at, source="celestrak",
+        event_id=event_id, timestamp=made_at, source=source,
         raw_data={
             "object_a_id": object_a_id, "object_a_name": "SAT-A", "object_b_id": object_b_id, "object_b_name": "SAT-B",
             "min_distance_km": 2.5,
@@ -218,6 +218,77 @@ def test_send_critical_alert_is_not_self_suppressed(mock_post):
     )
 
     assert result is True
+
+
+@patch("src.alerting.requests.post")
+def test_send_critical_alert_is_not_suppressed_for_a_same_day_repeat_demo_run(mock_post):
+    """Real gap this closes: a real operator (or a founder rehearsing a
+    VC demo) clicking "Run synthetic CRITICAL scenario" a second time
+    the same day - or re-running scripts/run_demo.py to rehearse a pitch -
+    is a deliberate, one-off demo action, not "the same real hazard
+    automatically re-detected by continuous scanning" (the actual
+    scenario the cooldown exists to protect against). Without this
+    exemption, the second same-day run silently loses its webhook alert
+    with no error or indication why - directly breaking the advertised
+    real-time alert feature on exactly the live-demo scenario a VC-demo-
+    readiness review is framed around."""
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+    now = datetime.now(timezone.utc)
+    earlier_run = _conjunction_entry_at(
+        now - timedelta(hours=1), event_id="conj-synthetic-critical-run1-0", source="synthetic-critical-fixture",
+    )
+    second_run = _conjunction_entry_at(
+        now, event_id="conj-synthetic-critical-run2-0", source="synthetic-critical-fixture",
+    )
+
+    result = send_critical_alert(
+        second_run, _settings(alert_webhook_url="https://example.com/webhook"),
+        recent_critical_entries=[earlier_run],
+    )
+
+    assert result is True
+    mock_post.assert_called_once()
+
+
+@patch("src.alerting.requests.post")
+def test_send_critical_alert_is_not_suppressed_for_a_same_day_historical_replay_rerun(mock_post):
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+    now = datetime.now(timezone.utc)
+    earlier_replay = _conjunction_entry_at(
+        now - timedelta(hours=1), event_id="historical-run1", source="historical-replay",
+        object_a_id="24946", object_b_id="22675",
+    )
+    second_replay = _conjunction_entry_at(
+        now, event_id="historical-run2", source="historical-replay",
+        object_a_id="24946", object_b_id="22675",
+    )
+
+    result = send_critical_alert(
+        second_replay, _settings(alert_webhook_url="https://example.com/webhook"),
+        recent_critical_entries=[earlier_replay],
+    )
+
+    assert result is True
+
+
+@patch("src.alerting.requests.post")
+def test_send_critical_alert_still_applies_cooldown_for_real_sources(mock_post):
+    """The exemption above must be narrowly scoped to known demo-only
+    sources - a real celestrak/spacetrack/celestrak-decay re-detection
+    (the actual scenario ALERT_COOLDOWN_HOURS protects against) must
+    still be suppressed, unchanged."""
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+    now = datetime.now(timezone.utc)
+    earlier_tick = _conjunction_entry_at(now - timedelta(hours=1), event_id="conj-tick-1", source="celestrak")
+    later_tick = _conjunction_entry_at(now, event_id="conj-tick-2", source="celestrak")
+
+    result = send_critical_alert(
+        later_tick, _settings(alert_webhook_url="https://example.com/webhook"),
+        recent_critical_entries=[earlier_tick],
+    )
+
+    assert result is False
+    mock_post.assert_not_called()
 
 
 def test_build_alert_text_covers_conjunction_shape():

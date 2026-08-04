@@ -84,18 +84,32 @@ def test_dashboard_sidebar_has_expected_controls():
     assert any("Operator name" in ti.label for ti in at.sidebar.text_input)
 
 
-def test_dashboard_all_decisions_has_severity_and_source_filters():
+def test_dashboard_all_decisions_has_severity_and_source_filters(tmp_path):
     """Parity check with scripts/api.py's GET /decisions, which already
     supports severity/source filters - the dashboard's own "All
     decisions" table (the real risk board, per its own caption) had no
     equivalent, and grows unbounded under continuous scheduled operation
-    (scripts/scheduler.py)."""
-    at = AppTest.from_file(DASHBOARD_PATH)
-    at.run(timeout=30)
+    (scripts/scheduler.py).
 
-    multiselect_labels = {m.label for m in at.multiselect}
-    assert {"Filter by severity", "Filter by source"} <= multiselect_labels
-    assert any("Showing" in c.value and "of" in c.value for c in at.caption)
+    Real bug this regression-tests: without an isolated log_dir, this
+    test previously depended on whatever real entries happened to
+    already be sitting in the ambient default log directory - present on
+    a dev machine that had run the app many times, but empty on a fresh
+    CI checkout, where `_render_all_decisions_table` takes its "no
+    entries yet" early-return branch and never renders the filters at
+    all. Seeding one real entry via _log_dir(tmp_path) (the same pattern
+    every other data-dependent test in this file already uses) makes the
+    filters' presence deterministic instead of environment-dependent."""
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        logger.log(_widget_test_entry("e1", Severity.WATCH))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+        multiselect_labels = {m.label for m in at.multiselect}
+        assert {"Filter by severity", "Filter by source"} <= multiselect_labels
+        assert any("Showing" in c.value and "of" in c.value for c in at.caption)
 
 
 def test_dashboard_severity_filter_narrows_the_all_decisions_table():

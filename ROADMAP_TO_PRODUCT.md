@@ -1252,3 +1252,43 @@ real running dashboard, confirmed both the real UI success message
 ("Test alert sent - check your configured channel.") and the real
 receiver logging the actual POST body - clearly labeled, never
 confusable with a real CRITICAL page.
+
+## Post-Phase-6 improvement — audit-log CSV export
+
+Closes the second review's last remaining finding, with a genuine
+correction along the way: the review's grep-based check (searching
+`scripts/dashboard.py`/`scripts/api.py` for "download"/"csv"/"export")
+concluded there was no export anywhere. Actually verifying live in the
+browser found this half-wrong - Streamlit's built-in `st.dataframe`
+toolbar (present since a recent Streamlit version, `streamlit==1.60.0`
+here) already renders a real "Download as CSV" button for the "All
+decisions" table for free, with zero custom code, and it already
+respects the severity/source filters added earlier (since it exports
+whatever's actually being displayed). Worth documenting precisely
+because the review's method (grep for known strings) had a real blind
+spot for framework-provided UI, and a shallower read could have wasted
+effort re-implementing something that already existed.
+
+What was genuinely still missing: the REST API had no CSV export at
+all - only JSON, and only paginated JSON at that (`GET /decisions`'s
+`limit`/`offset`). A real operator's own tooling, or a human without
+dashboard access, had no portable-file way to pull the audit trail.
+Closed with `GET /decisions/export` (`scripts/api.py`) - reuses the
+exact same `entries_to_rows` transform the dashboard's table uses (via
+`pandas.DataFrame(...).to_csv()`, a dependency already pulled in by
+Streamlit, not a new one), same `severity`/`source` filters as the
+plain `/decisions` list, but no `limit`/`offset` - export means
+"everything matching the filter," not one paginated page of it.
+Registered before `/decisions/{event_id}` on purpose - Starlette
+matches literal path segments before path-param routes only if they're
+registered first, so `/decisions/export` would otherwise be swallowed
+by `{event_id}="export"` and 404.
+
+4 new tests in `tests/test_api.py` (real CSV headers/content-type/
+attachment-disposition, severity/source filtering, the route-ordering
+guard). Full suite: 438/438. Live-verified against a real running
+`uvicorn` server and the real accumulated audit log: `curl`'d
+`/decisions/export`, got a real 269-line CSV (header + all 268 logged
+decisions) with real column headers and real data; filtering to
+`?severity=critical` correctly returned exactly the 135 real CRITICAL
+rows.

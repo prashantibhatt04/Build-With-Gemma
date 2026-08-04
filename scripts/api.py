@@ -48,6 +48,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST
@@ -310,6 +311,38 @@ def list_pending_approvals(
     operator: Optional[str] = Depends(optional_operator), logger: DecisionLogger = Depends(get_logger),
 ):
     return pending_approvals(_call_storage_or_503(logger.load_all_entries))
+
+
+@app.get("/decisions/export")
+def export_decisions_csv(
+    severity: Optional[str] = Query(None, description="Filter by severity: nominal/watch/warning/critical"),
+    source: Optional[str] = Query(None, description="Filter by telemetry source, e.g. celestrak"),
+    operator: Optional[str] = Depends(optional_operator),
+    logger: DecisionLogger = Depends(get_logger),
+) -> Response:
+    """Real CSV export of the audit log - a genuine gap found by a real
+    PM/customer review: the only way to get this audit trail out of the
+    product was a live dashboard URL or raw JSON from the endpoints
+    above - a real operator handing this to an insurer, regulator, or
+    their own ops review needs a portable file, not a link. Reuses the
+    exact same entries_to_rows transform the dashboard's own table uses,
+    not a second format that could drift out of sync. Registered BEFORE
+    /decisions/{event_id} below - Starlette matches path routes in
+    registration order, so "export" would otherwise be captured as a
+    literal event_id and 404. Same severity/source filters as the plain
+    /decisions list above, but no limit/offset - export means "give me
+    everything matching the filter," not a paginated page of it."""
+    entries = _call_storage_or_503(logger.load_all_entries)
+    if severity is not None:
+        entries = [e for e in entries if e.finding.severity.value == severity]
+    if source is not None:
+        entries = [e for e in entries if e.telemetry.source == source]
+
+    csv_bytes = pd.DataFrame(entries_to_rows(entries)).to_csv(index=False).encode("utf-8")
+    return Response(
+        content=csv_bytes, media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=decisions.csv"},
+    )
 
 
 @app.get("/decisions/{event_id}", response_model=DecisionLogEntry)

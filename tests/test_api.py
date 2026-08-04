@@ -138,6 +138,55 @@ def test_list_decisions_respects_limit_and_offset(client):
     assert [e["telemetry"]["event_id"] for e in response.json()] == ["e1", "e2"]
 
 
+def test_export_decisions_csv_returns_a_real_csv_of_the_real_entries(client):
+    """Real gap this closes: the only way to get the audit trail out of
+    this product was a live dashboard URL or raw JSON - a real operator
+    handing this to an insurer, regulator, or their own ops review needs
+    a portable file, not a link."""
+    test_client, logger = client
+    logger.log(_make_entry("e1", Severity.WATCH))
+    logger.log(_make_entry("e2", Severity.CRITICAL))
+
+    response = test_client.get("/decisions/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+    body = response.text
+    assert "e1" in body
+    assert "e2" in body
+    assert "severity" in body.splitlines()[0]  # real header row, not just data
+
+
+def test_export_decisions_csv_filters_by_severity_and_source(client):
+    test_client, logger = client
+    logger.log(_make_entry("e1", Severity.WATCH, source="celestrak"))
+    logger.log(_make_entry("e2", Severity.CRITICAL, source="celestrak-decay"))
+
+    response = test_client.get("/decisions/export", params={"severity": "critical"})
+    body = response.text
+    assert "e2" in body
+    assert "e1" not in body
+
+    response = test_client.get("/decisions/export", params={"source": "celestrak-decay"})
+    assert "e2" in response.text
+    assert "e1" not in response.text
+
+
+def test_export_decisions_csv_is_registered_before_the_event_id_route(client):
+    """Real bug this test guards against: Starlette matches path routes
+    in registration order - if /decisions/{event_id} were registered
+    first, a request to /decisions/export would be captured as
+    event_id="export" and 404, instead of hitting the real export
+    endpoint."""
+    test_client, _logger = client
+
+    response = test_client.get("/decisions/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+
+
 def test_get_decision_returns_404_for_unknown_event_id(client):
     test_client, _logger = client
     response = test_client.get("/decisions/does-not-exist")

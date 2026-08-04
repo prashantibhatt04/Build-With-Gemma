@@ -299,8 +299,8 @@ uvicorn scripts.api:app --reload
 The dashboard is for a human; this is for an operator's own
 mission-control software. A real FastAPI service over the exact same
 audit log (`GET /decisions`, `/decisions/{event_id}`,
-`/decisions/pending-approval`, `/stats/summary`; `POST
-/decisions/{event_id}/approve|reject|review`) — see
+`/decisions/pending-approval`, `/decisions/export` (CSV), `/stats/summary`;
+`POST /decisions/{event_id}/approve|reject|review`) — see
 [`ROADMAP_TO_PRODUCT.md`](ROADMAP_TO_PRODUCT.md) Phase 6. Interactive
 docs at `http://localhost:8000/docs` once running. Reads stay open if
 `OPERATOR_TOKENS` isn't configured (same zero-setup default as the

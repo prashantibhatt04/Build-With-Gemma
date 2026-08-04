@@ -187,6 +187,45 @@ def send_critical_alert(
         return False
 
 
+def send_test_alert(settings: Settings = default_settings) -> bool:
+    """Sends a real webhook POST with a clearly-labeled test message, not
+    tied to any real finding - lets a real operator verify
+    ALERT_WEBHOOK_URL is actually wired correctly (right URL, right
+    channel, no firewall/network issue) BEFORE a real CRITICAL hazard
+    occurs, the same "send test alert" capability essentially every other
+    monitoring product (PagerDuty, Datadog, UptimeRobot, ...) already has -
+    a real gap found by a live PM/customer review: without this, the
+    first time an operator would discover a misconfigured webhook is
+    during a real CRITICAL event, the worst possible moment.
+
+    Distinctly labeled ("TEST ALERT", not "CRITICAL" or "SYSTEM HEALTH")
+    so it can never be mistaken for a real page in a shared channel. Same
+    fail-safe behavior as every other alert function here - never raises,
+    returns False for "nothing to send" (no URL configured) and for a
+    real send failure alike."""
+    if not settings.alert_webhook_url:
+        return False
+
+    try:
+        response = requests.post(
+            settings.alert_webhook_url,
+            json={
+                "text": (
+                    "\U0001f9ea TEST ALERT from Build-With-Gemma - this confirms "
+                    "ALERT_WEBHOOK_URL is configured correctly. No real hazard was detected; "
+                    "this message was sent by an operator clicking \"Send test alert\"."
+                ),
+            },
+            timeout=WEBHOOK_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return True
+    except requests.RequestException as exc:
+        detail = _redact_webhook_url(str(exc), settings.alert_webhook_url)
+        print(f"WARNING: test alert webhook failed: {detail}")
+        return False
+
+
 def send_health_alert(message: str, settings: Settings = default_settings) -> bool:
     """A real webhook POST about the SYSTEM's own health - e.g.
     scripts/scheduler.py firing this after several consecutive tick

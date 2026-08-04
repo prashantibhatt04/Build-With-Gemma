@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
+from src.alerting import send_test_alert
 from src.auth import authenticate
 from src.config import settings
 from src.dashboard_data import (
@@ -455,6 +456,32 @@ def _render_severity_threshold_status() -> None:
         )
 
 
+def _render_alert_status() -> None:
+    """Real gap this closes: an operator configuring ALERT_WEBHOOK_URL
+    for the first time had no way to confirm it's wired correctly (right
+    URL, right channel, no firewall issue) short of waiting for a real
+    CRITICAL hazard - the worst possible moment to discover a broken
+    pipe. "Send test alert" reuses the exact same real webhook send path
+    (src/alerting.py) a real CRITICAL page would use, just with a
+    distinctly-labeled test message that can never be mistaken for a
+    real page."""
+    if not settings.alert_webhook_url:
+        st.sidebar.info(
+            "🔕 CRITICAL-event webhook alerting is not configured. Set ALERT_WEBHOOK_URL "
+            "in .env to get real-time pages for CRITICAL findings."
+        )
+        return
+
+    st.sidebar.success("🔔 CRITICAL-event webhook alerting is configured.")
+    if st.sidebar.button("Send test alert"):
+        with st.spinner("Sending a real test webhook POST..."):
+            sent = send_test_alert(settings)
+        if sent:
+            st.sidebar.success("Test alert sent - check your configured channel.")
+        else:
+            st.sidebar.error("Test alert failed to send - check ALERT_WEBHOOK_URL and your network.")
+
+
 def _get_shared_budget_tracker() -> DeltaVBudgetTracker:
     """One DeltaVBudgetTracker per browser session, reused across every
     button click and rerun - the same real bug class this project
@@ -539,6 +566,7 @@ def main() -> None:
         st.divider()
         _render_monitoring_status()
         _render_severity_threshold_status()
+        _render_alert_status()
 
         st.divider()
         st.subheader("Generate live activity")

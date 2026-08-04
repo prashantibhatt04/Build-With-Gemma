@@ -258,6 +258,42 @@ def test_dashboard_shows_customized_label_and_real_values_when_thresholds_overri
         assert "20.0°" in text
 
 
+@contextmanager
+def _alert_webhook_url(url: str):
+    """Same object.__setattr__-on-the-shared-singleton pattern as
+    _operator_tokens/_spacetrack_credentials/_watched_norad_ids above."""
+    original = settings.alert_webhook_url
+    object.__setattr__(settings, "alert_webhook_url", url)
+    try:
+        yield
+    finally:
+        object.__setattr__(settings, "alert_webhook_url", original)
+
+
+def test_dashboard_shows_unconfigured_alert_notice_when_webhook_unset():
+    with _alert_webhook_url(""):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+    assert any("not configured" in i.value and "ALERT_WEBHOOK_URL" in i.value for i in at.sidebar.info)
+    assert not any(b.label == "Send test alert" for b in at.sidebar.button)
+
+
+def test_dashboard_shows_send_test_alert_button_when_webhook_configured():
+    """Real gap this closes: an operator configuring ALERT_WEBHOOK_URL
+    had no way to verify it's wired correctly before a real CRITICAL
+    hazard occurred. The button's mere presence is what's being checked
+    here - never clicked by this automated suite (same discipline this
+    file's own header comment documents for the CelesTrak/Space-Track
+    fetch buttons, to avoid a real network call in tests)."""
+    with _alert_webhook_url("https://example.com/webhook"):
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+    assert any("configured" in s.value for s in at.sidebar.success)
+    assert any(b.label == "Send test alert" for b in at.sidebar.button)
+
+
 def test_dashboard_shows_spacetrack_button_when_credentials_configured():
     # Real network calls are never triggered in this suite - the button's
     # mere presence is what's being checked here, same discipline this

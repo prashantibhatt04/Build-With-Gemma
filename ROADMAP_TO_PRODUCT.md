@@ -1217,3 +1217,38 @@ The second review's two other findings (a "send test alert" button for
 webhook configuration, and CSV/PDF export of the audit log for a real
 operator's insurer/regulator) are real and queued as future
 improvements, not yet implemented.
+
+## Post-Phase-6 improvement — a "Send test alert" button
+
+Closes the second review's remaining alerting finding: an operator
+configuring `ALERT_WEBHOOK_URL` for the first time had no way to verify
+it's actually wired correctly (right URL, right channel, no firewall/
+network issue) short of waiting for a real CRITICAL hazard - the worst
+possible moment to discover a broken pipe. Essentially every other
+monitoring product (PagerDuty, Datadog, UptimeRobot) already has a
+"send test alert" capability; this project didn't.
+
+Closed with `send_test_alert()` (`src/alerting.py`) - reuses the exact
+same real webhook-send path `send_critical_alert` uses, with a
+distinctly-labeled message ("🧪 TEST ALERT", never "CRITICAL" or
+"SYSTEM HEALTH") so it can never be mistaken for a real page in a
+shared channel. Wired into a new `_render_alert_status()` sidebar
+section (`scripts/dashboard.py`) that also closes a smaller
+discoverability gap noticed along the way: the dashboard previously had
+*zero* visibility into whether alerting was configured at all (unlike
+the watch-list and severity-threshold status the sidebar already
+shows) - now shows a real 🔕/🔔 status either way, with the button only
+appearing when a webhook URL is actually configured.
+
+6 new tests across `tests/test_alerting.py` (skips when unconfigured,
+posts a distinctly-labeled message, fails safely without raising,
+redacts the secret on failure) and `tests/test_dashboard_app.py` (the
+unconfigured notice vs. the configured status+button, never clicking
+the button in the automated suite - same discipline as every other
+data-generating button here). Full suite: 435/435. Live-verified
+end-to-end against a real local HTTP receiver: temporarily pointed
+`ALERT_WEBHOOK_URL` at the receiver, clicked "Send test alert" in the
+real running dashboard, confirmed both the real UI success message
+("Test alert sent - check your configured channel.") and the real
+receiver logging the actual POST body - clearly labeled, never
+confusable with a real CRITICAL page.

@@ -6,7 +6,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.alerting import ALERT_COOLDOWN_HOURS, build_alert_text, hazard_key, send_critical_alert, send_health_alert
+from src.alerting import (
+    ALERT_COOLDOWN_HOURS,
+    build_alert_text,
+    hazard_key,
+    send_critical_alert,
+    send_health_alert,
+    send_test_alert,
+)
 from src.config import Settings
 from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent
 
@@ -358,6 +365,56 @@ def test_send_health_alert_does_not_leak_the_webhook_secret_on_failure(mock_post
     )
 
     result = send_health_alert("scheduler down", _settings(alert_webhook_url=webhook_url))
+
+    assert result is False
+    printed = capsys.readouterr().out
+    assert "SECRETTOKEN123" not in printed
+    assert "redacted" in printed
+
+
+@patch("src.alerting.requests.post")
+def test_send_test_alert_skips_when_no_webhook_configured(mock_post):
+    result = send_test_alert(_settings(alert_webhook_url=""))
+
+    assert result is False
+    mock_post.assert_not_called()
+
+
+@patch("src.alerting.requests.post")
+def test_send_test_alert_posts_a_distinctly_labeled_message(mock_post):
+    """Real gap this closes: an operator configuring ALERT_WEBHOOK_URL
+    had no way to verify it before a real CRITICAL hazard occurred - the
+    worst possible moment to discover a broken pipe. Must be clearly
+    labeled TEST ALERT so it's never confused with a real CRITICAL page
+    or a SYSTEM HEALTH alert in a shared channel."""
+    mock_post.return_value = MagicMock(raise_for_status=MagicMock())
+
+    result = send_test_alert(_settings(alert_webhook_url="https://example.com/webhook"))
+
+    assert result is True
+    payload = mock_post.call_args.kwargs["json"]
+    assert "TEST ALERT" in payload["text"]
+    assert "CRITICAL" not in payload["text"]
+    assert "SYSTEM HEALTH" not in payload["text"]
+
+
+@patch("src.alerting.requests.post")
+def test_send_test_alert_returns_false_and_does_not_raise_on_network_failure(mock_post):
+    mock_post.side_effect = requests.RequestException("connection refused")
+
+    result = send_test_alert(_settings(alert_webhook_url="https://example.com/webhook"))
+
+    assert result is False  # did not raise
+
+
+@patch("src.alerting.requests.post")
+def test_send_test_alert_does_not_leak_the_webhook_secret_on_failure(mock_post, capsys):
+    webhook_url = "https://hooks.slack.com/services/T000/B111/SECRETTOKEN123"
+    mock_post.side_effect = requests.exceptions.ConnectionError(
+        "Max retries exceeded with url: /services/T000/B111/SECRETTOKEN123"
+    )
+
+    result = send_test_alert(_settings(alert_webhook_url=webhook_url))
 
     assert result is False
     printed = capsys.readouterr().out

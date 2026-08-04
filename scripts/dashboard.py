@@ -50,7 +50,14 @@ import streamlit as st
 
 from src.auth import authenticate
 from src.config import settings
-from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, needs_attention, pending_approvals
+from src.dashboard_data import (
+    compute_metrics,
+    entries_to_rows,
+    filter_entries,
+    needs_attention,
+    pending_approvals,
+    tca_urgency_label,
+)
 from src.ingestion.attitude_adapter import SyntheticAttitudeAdapter
 from src.ingestion.celestrak_adapter import CelesTrakAdapter
 from src.ingestion.decay_adapter import DecayRiskAdapter
@@ -129,6 +136,17 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
                 f"Proposed: {plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s delta-v  |  "
                 f"Target clearance: {plan.target_clearance_km:.1f} km"
             )
+            # Real, decision-relevant urgency - a human approving/
+            # rejecting needs to know not just how close this gets but
+            # whether the event it's FOR has already happened, since
+            # approving a maneuver after its own TCA has no effect.
+            tca_raw = raw.get("time_of_closest_approach")
+            if tca_raw:
+                urgency = tca_urgency_label(tca_raw)
+                if "already passed" in urgency:
+                    st.warning(f"⚠️ {urgency} - approving this maneuver no longer has any effect.")
+                else:
+                    st.caption(urgency)
             st.caption(entry.decision.rationale)
             col_approve, col_reject = st.columns(2)
             if col_approve.button("Approve", key=f"approve_{entry.telemetry.event_id}", type="primary"):

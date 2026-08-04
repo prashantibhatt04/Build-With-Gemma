@@ -1162,3 +1162,58 @@ dropped to "Needs attention (3)" with that entry gone.
 This closes out the fresh PM/customer review that also produced the
 alert-cooldown, TCA-visibility, and dashboard-filtering improvements
 above - all four findings from that review are now closed.
+
+## Post-Phase-6 improvement — a SECOND fresh PM/customer review, and TCA urgency in the pending-approval queue
+
+A second independent PM-then-customer review (explicitly scoped to find
+gaps beyond every improvement documented above, including the four just
+listed) found that the TCA-visibility work had a real follow-on gap:
+TCA reached the "All decisions" table, the terminal renderer, and
+webhook alert text, but NOT `_render_pending_approvals`
+(`scripts/dashboard.py`) - the one place a real human actually makes a
+decision. Two concrete problems: (1) `pending_approvals()`
+(`src/dashboard_data.py`) returned entries in whatever order they
+happened to be logged, not sorted by urgency, so the most
+time-critical maneuver could sit at the bottom of the queue; (2) an
+operator could click "Approve" on a maneuver whose own
+time_of_closest_approach had already passed, with no warning that doing
+so no longer has any real effect.
+
+Closed by making `pending_approvals()` sort by soonest real
+`time_of_closest_approach` first, and adding `tca_urgency_label()` - a
+real, decision-relevant "TCA in 3h 12m" or "TCA already passed 1h 5m
+ago" label. Wired into the pending-approval card
+(`scripts/dashboard.py`): a future TCA shows as a caption, a passed TCA
+shows as a real `st.warning` ("approving this maneuver no longer has
+any effect") rather than silently letting an operator act on stale
+data.
+
+**Explicitly NOT addressed in this pass, and called out as a genuine
+open question rather than silently skipped:** the review also flagged
+that `ALERT_COOLDOWN_HOURS` (a flat 24h, see the alert-cooldown
+improvement above) has no awareness of `awaiting_human_approval` state -
+a maneuver still awaiting approval as its TCA nears could theoretically
+have its "still needs a decision" re-alert suppressed by the same
+same-hazard cooldown that's meant to prevent noise for *resolved*
+hazards. This needs its own dedicated investigation (it interacts with
+how repeated scheduler ticks re-detect a still-open hazard and whether
+that creates duplicate pending-approval entries in the first place) -
+deliberately left open rather than bolting on a rushed fix in a
+safety-relevant area.
+
+3 new tests in `tests/test_dashboard_data.py` (`tca_urgency_label` for
+both a future and an already-passed TCA, `pending_approvals` sorting by
+soonest TCA first even when logged out of order). Full suite: 429/429.
+Live-verified against the real running dashboard: logged two real
+`awaiting_human_approval` entries via the real `DecisionLogger` into
+the real audit log (one 3.2h in the future, one 1.8h in the past), then
+confirmed the dashboard rendered "Pending human approval (2)" with the
+past-TCA entry sorted first and its real warning
+("TCA already passed 1h 48m ago...") and the future entry second with
+"TCA in 3h 11m" - both fixtures rejected afterward to leave the real
+log clean.
+
+The second review's two other findings (a "send test alert" button for
+webhook configuration, and CSV/PDF export of the audit log for a real
+operator's insurer/regulator) are real and queued as future
+improvements, not yet implemented.

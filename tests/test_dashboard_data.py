@@ -1,7 +1,14 @@
 """Tests for src/dashboard_data.py - pure transforms, no Streamlit involved."""
 from datetime import datetime, timezone
 
-from src.dashboard_data import compute_metrics, entries_to_rows, filter_entries, needs_attention, pending_approvals
+from src.dashboard_data import (
+    compute_metrics,
+    entries_to_rows,
+    filter_entries,
+    needs_attention,
+    pending_approvals,
+    tca_urgency_label,
+)
 from src.maneuver import compute_avoidance_maneuver, verify_maneuver
 from src.schemas import (
     AnomalyFinding,
@@ -250,6 +257,50 @@ def test_pending_approvals_returns_only_awaiting_entries():
     result = pending_approvals([awaiting, not_awaiting])
 
     assert result == [awaiting]
+
+
+def test_pending_approvals_sorted_by_soonest_time_of_closest_approach():
+    """Real behavior this guards: the most time-urgent maneuver must
+    surface at the TOP of a real operator's approval queue, not wherever
+    it happened to land chronologically in the log - an operator working
+    top-to-bottom should always see the soonest TCA first."""
+    plan = compute_avoidance_maneuver(object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0)
+
+    soon = _conjunction_entry(
+        "soon", Severity.CRITICAL, min_distance_km=2.0,
+        decision_overrides={"maneuver_plan": plan, "awaiting_human_approval": True},
+    )
+    soon.telemetry.raw_data["time_of_closest_approach"] = "2026-08-02T01:00:00+00:00"
+
+    later = _conjunction_entry(
+        "later", Severity.CRITICAL, min_distance_km=2.0,
+        decision_overrides={"maneuver_plan": plan, "awaiting_human_approval": True},
+    )
+    later.telemetry.raw_data["time_of_closest_approach"] = "2026-08-03T00:00:00+00:00"
+
+    result = pending_approvals([later, soon])  # deliberately logged out of TCA order
+
+    assert result == [soon, later]
+
+
+def test_tca_urgency_label_reports_time_remaining_for_a_future_tca():
+    now = datetime(2026, 8, 2, 0, 0, 0, tzinfo=timezone.utc)
+
+    label = tca_urgency_label("2026-08-02T03:12:00+00:00", now=now)
+
+    assert label == "TCA in 3h 12m"
+
+
+def test_tca_urgency_label_flags_a_tca_that_has_already_passed():
+    """Real gap this closes: an operator approving/rejecting a maneuver
+    previously had no way to tell from the pending-approval card whether
+    the conjunction it's FOR has already happened - approving a maneuver
+    after its own TCA has no effect."""
+    now = datetime(2026, 8, 2, 5, 0, 0, tzinfo=timezone.utc)
+
+    label = tca_urgency_label("2026-08-02T03:12:00+00:00", now=now)
+
+    assert label == "TCA already passed 1h 48m ago"
 
 
 def _dummy_entry(event_id: str, severity: Severity, source: str) -> DecisionLogEntry:

@@ -4,7 +4,7 @@ src/preflight.py's checks are separated from scripts/run_demo.py's printing).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from .display import classify_decision_status
@@ -93,7 +93,36 @@ def compute_metrics(entries: list[DecisionLogEntry]) -> dict:
 
 
 def pending_approvals(entries: list[DecisionLogEntry]) -> list[DecisionLogEntry]:
-    return [e for e in entries if e.decision.awaiting_human_approval]
+    """awaiting_human_approval entries, sorted by soonest real
+    time_of_closest_approach first - the most time-urgent maneuver
+    surfaces at the top of a real operator's queue instead of wherever it
+    happened to land chronologically in the log. Every entry here is
+    conjunction-shaped (awaiting_human_approval is only ever set when a
+    maneuver_plan exists - see decide_node, src/pipeline.py), so
+    time_of_closest_approach is always real and present; .get with a
+    fallback just avoids a crash if that invariant is ever violated,
+    sorting anything missing it to the front (a missing TCA is itself
+    worth an operator's attention first)."""
+    pending = [e for e in entries if e.decision.awaiting_human_approval]
+    return sorted(pending, key=lambda e: e.telemetry.raw_data.get("time_of_closest_approach", ""))
+
+
+def tca_urgency_label(time_of_closest_approach: str, now: Optional[datetime] = None) -> str:
+    """A real, decision-relevant urgency label from a raw ISO
+    time_of_closest_approach string - "TCA in 3h 12m" or "TCA already
+    passed 1h 5m ago" - so an operator approving/rejecting a maneuver can
+    see at a glance whether the event this maneuver is actually FOR has
+    already happened, not just how close it eventually got. now defaults
+    to the real current time; overridable for tests."""
+    now = now or datetime.now(timezone.utc)
+    tca = datetime.fromisoformat(time_of_closest_approach)
+    delta = tca - now
+    passed = delta.total_seconds() < 0
+    hours, remainder = divmod(int(abs(delta).total_seconds()), 3600)
+    minutes = remainder // 60
+    if passed:
+        return f"TCA already passed {hours}h {minutes}m ago"
+    return f"TCA in {hours}h {minutes}m"
 
 
 def filter_entries(

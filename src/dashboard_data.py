@@ -21,6 +21,20 @@ STATUS_LABELS = {
     "unknown": "unknown",
 }
 
+# The real column order entries_to_rows() below always produces - a
+# single source of truth so a caller building an empty-but-still-real
+# CSV (see scripts/api.py's /decisions/export) can emit a real header
+# row even with zero entries, instead of pandas silently producing a
+# completely columnless, headerless file for an empty DataFrame (a real
+# bug found live: a fresh deployment with no logged decisions yet
+# downloaded a 1-byte CSV with no header at all).
+ENTRY_ROW_COLUMNS = [
+    "timestamp", "event_id", "source", "severity", "action", "subject",
+    "time_of_closest_approach", "min_distance_km", "perigee_altitude_km",
+    "pointing_error_deg", "collision_probability", "severity_source",
+    "real_repropagated_min_distance_km", "status", "rationale_source", "human_reviewed",
+]
+
 
 def entries_to_rows(entries: list[DecisionLogEntry]) -> list[dict]:
     """DecisionLogEntry list -> flat dicts for a table. Uses

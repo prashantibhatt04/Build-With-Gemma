@@ -57,7 +57,7 @@ from starlette.routing import Match
 
 from src.auth import authenticate
 from src.config import settings
-from src.dashboard_data import compute_metrics, entries_to_rows, pending_approvals
+from src.dashboard_data import ENTRY_ROW_COLUMNS, compute_metrics, entries_to_rows, pending_approvals
 from src.logging_utils import DecisionLogger
 from src.metrics import DecisionLogCollector, http_requests_total, rate_limited_requests_total, registry, render_metrics
 from src.rate_limit import RateLimiter
@@ -331,14 +331,20 @@ def export_decisions_csv(
     registration order, so "export" would otherwise be captured as a
     literal event_id and 404. Same severity/source filters as the plain
     /decisions list above, but no limit/offset - export means "give me
-    everything matching the filter," not a paginated page of it."""
+    everything matching the filter," not a paginated page of it. Real
+    bug this closes: pandas.DataFrame([]).to_csv() on a genuinely empty
+    result silently produces a completely columnless, headerless file
+    (confirmed live against a fresh deployment with zero logged
+    decisions) - passing ENTRY_ROW_COLUMNS explicitly guarantees a real
+    header row is always present, even when there's nothing to export
+    yet."""
     entries = _call_storage_or_503(logger.load_all_entries)
     if severity is not None:
         entries = [e for e in entries if e.finding.severity.value == severity]
     if source is not None:
         entries = [e for e in entries if e.telemetry.source == source]
 
-    csv_bytes = pd.DataFrame(entries_to_rows(entries)).to_csv(index=False).encode("utf-8")
+    csv_bytes = pd.DataFrame(entries_to_rows(entries), columns=ENTRY_ROW_COLUMNS).to_csv(index=False).encode("utf-8")
     return Response(
         content=csv_bytes, media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=decisions.csv"},

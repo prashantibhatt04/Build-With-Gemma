@@ -9,6 +9,17 @@
 # second, undocumented version choice.
 FROM python:3.12-slim
 
+# Real bug this fixes: Python block-buffers stdout when it isn't
+# attached to a real terminal (always true inside a container), so
+# scripts/scheduler.py's own real per-tick progress prints (tick N:
+# screening..., logged N entries...) never actually appear in `docker
+# compose logs -f scheduler` until a buffer flush happens - which may
+# never visibly occur within a live demo's timeframe. The scheduler is
+# genuinely running the whole time (confirmed via its real heartbeat
+# file, see scripts/scheduler.py) - this only fixes what's VISIBLE to
+# someone watching the logs live, not the underlying behavior.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt .

@@ -138,6 +138,26 @@ def test_list_decisions_respects_limit_and_offset(client):
     assert [e["telemetry"]["event_id"] for e in response.json()] == ["e1", "e2"]
 
 
+def test_export_decisions_csv_has_a_real_header_row_even_with_zero_entries(client):
+    """Real bug this guards against: pandas.DataFrame([]).to_csv()
+    silently produces a completely columnless, headerless file for a
+    genuinely empty result - a fresh deployment with no logged decisions
+    yet (confirmed live in a fresh docker-compose stack) would download
+    a useless 1-byte CSV instead of a real, recognizable header row."""
+    test_client, _logger = client
+
+    response = test_client.get("/decisions/export")
+
+    assert response.status_code == 200
+    header = response.text.strip().splitlines()[0]
+    assert header.split(",") == [
+        "timestamp", "event_id", "source", "severity", "action", "subject",
+        "time_of_closest_approach", "min_distance_km", "perigee_altitude_km",
+        "pointing_error_deg", "collision_probability", "severity_source",
+        "real_repropagated_min_distance_km", "status", "rationale_source", "human_reviewed",
+    ]
+
+
 def test_export_decisions_csv_returns_a_real_csv_of_the_real_entries(client):
     """Real gap this closes: the only way to get the audit trail out of
     this product was a live dashboard URL or raw JSON - a real operator

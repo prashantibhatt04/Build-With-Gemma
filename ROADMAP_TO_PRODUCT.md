@@ -1325,3 +1325,80 @@ real demo end to end twice - before the fix, reproduced the real
 mismatch (shown above); after, confirmed Step 9 correctly displays the
 real reviewed conjunction entry with `"human_reviewed": true`, matching
 Step 8's own narration.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 2: real Docker deployment issues found by actually running it
+
+Continuing the same sweep, actually built and ran the full real
+`docker compose up --build` stack (Postgres + dashboard + scheduler +
+API, all four healthy) rather than just re-reading the Dockerfile/
+compose file - the same "run it for real, don't just reason about it"
+discipline behind the run_demo.py fix above. Found two real issues:
+
+**Scheduler logs appeared completely silent.** `docker compose logs -f
+scheduler` showed nothing, even though the scheduler was genuinely
+running the whole time (confirmed via its real heartbeat file showing
+`tick_number: 0` had already completed). Root cause: Python
+block-buffers stdout when it isn't attached to a real terminal - always
+true inside a container - so `scripts/scheduler.py`'s own real per-tick
+progress prints never actually flush to where `docker compose logs`
+can see them. For a live demo where someone runs `docker compose logs
+-f scheduler` to show "look, it's really working," this reads as
+broken or fake. Fixed with `ENV PYTHONUNBUFFERED=1` in the `Dockerfile`
+- a one-line, well-established fix for exactly this class of
+containerized-Python problem.
+
+**`GET /decisions/export` returned a useless 1-byte file on a fresh
+deployment.** A brand-new `docker compose up` with zero logged
+decisions yet (real, since the Postgres volume was freshly created)
+downloaded a completely empty, headerless CSV -
+`pandas.DataFrame([]).to_csv()` silently produces no columns at all for
+a genuinely empty result. Fixed by adding `ENTRY_ROW_COLUMNS`
+(`src/dashboard_data.py`) - a single source of truth for the real
+column order `entries_to_rows()` always produces - and passing it
+explicitly to `pandas.DataFrame(..., columns=ENTRY_ROW_COLUMNS)` in the
+export endpoint, guaranteeing a real, recognizable header row even with
+zero entries.
+
+1 new test in `tests/test_api.py` (the empty-header guard). Full suite:
+441/441 at the time. Live-verified against the real Docker stack:
+confirmed `docker compose ps` showed all four services healthy, the API
+`/health` endpoint reported `"storage_backend":"postgres"` for real,
+and the export endpoint's real header-row fix.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 3: stale hardcoded TCA broke the flagship demo fixture
+
+A dedicated fresh review through a live-VC-demo lens (separate from the
+general PM/customer reviews above - specifically: "would this embarrass
+a founder presenting live to investors?") found that
+`SyntheticCriticalAdapter` (`src/ingestion/synthetic_adapter.py`) -
+this project's own flagship "CRITICAL conjunction, human must approve
+the maneuver" demo fixture - hardcoded `time_of_closest_approach` to a
+fixed calendar date. That date was real and future when first written,
+but ages like milk: once it passes, every "Run synthetic CRITICAL
+scenario" click renders the real `tca_urgency_label()` feature (built
+in the immediately preceding improvement above) as "TCA already passed
+Xh Ym ago - approving this maneuver no longer has any effect" - on the
+exact fixture built to demo the human-approval flow this warning
+protects. A technical VC would notice the flagship button looking
+broken on cue.
+
+Fixed by deriving the TCA relative to `datetime.now(timezone.utc)` (a
+fixed 6-hour lead time, matching `src/maneuver.py`'s own
+`ASSUMED_MANEUVER_LEAD_TIME_S`) instead of a frozen date - the fixture
+is now always genuinely "still time to act" no matter when the demo
+runs. 2 new tests in a new `tests/test_synthetic_adapter.py`. Full
+suite: 443/443. Live-verified: fetched a real batch and confirmed
+`tca_urgency_label()` now reports "TCA in 5h 59m", not a stale warning.
+
+Found alongside a real, separate, unrelated discovery during the same
+session: the demo machine's local Ollama had zero models installed
+(cleared to free disk space), meaning `GEMMA_BACKEND=ollama` was
+silently degrading every single Gemma call to the real hosted API via
+`GemmaClient`'s cross-backend failover - functionally correct (confirmed
+live, `last_backend_used` reporting `"api"`) but ~10x slower per call
+and incurring real API cost on every run. Switched the real `.env` to
+`GEMMA_BACKEND=api` explicitly to match actual behavior and make the
+choice honest rather than an accidental byproduct of disk cleanup - this
+also flips the demo's default flow from autonomous local execution to
+the human-approval path, arguably the more compelling story for an
+investor demo anyway.

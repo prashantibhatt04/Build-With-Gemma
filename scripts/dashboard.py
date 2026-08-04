@@ -46,12 +46,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pandas as pd
 import streamlit as st
 
 from src.alerting import send_test_alert
 from src.auth import authenticate
 from src.config import settings
 from src.dashboard_data import (
+    ENTRY_ROW_COLUMNS,
     compute_metrics,
     entries_to_rows,
     filter_entries,
@@ -75,22 +77,79 @@ from src.pipeline import run_once
 from src.rag import answer_question
 from src.schemas import DecisionLogEntry
 from src.trends import build_rationale_source_trend_figure, build_severity_trend_figure, is_real_live_source, recurring_objects
+from src.ui_style import SEVERITY_BADGE_COLORS, SEVERITY_BADGE_TEXT_COLORS, severity_badge_html
+
+# Scoped to the Approve/Reject buttons specifically via their own real,
+# unique `key=` prefixes (Streamlit stamps a `st-key-<key>` class on an
+# element's wrapper when it has an explicit key) - never a blanket
+# `button[kind=...]` rule, which would also repaint every other button in
+# this app (Refresh, Sign out, Acknowledge, ...) that never asked for it.
+# Approve is `type="primary"`, which without this would render in
+# Streamlit's default theme primary color (a reddish coral) - confusingly
+# close to a destructive action for what should read as the safe/affirm
+# choice, so this forces a real solid green. Reject stays a neutral
+# outline, tinted red only via border/text color, not a filled button -
+# visually secondary to Approve, not a second competing call to action.
+_APPROVE_REJECT_CSS = """
+<style>
+div[class*="st-key-approve_"] button {
+    background-color: #16A34A !important;
+    border-color: #16A34A !important;
+    color: white !important;
+}
+div[class*="st-key-reject_"] button {
+    background-color: transparent !important;
+    border: 1px solid #DC2626 !important;
+    color: #DC2626 !important;
+}
+[data-testid="stMetric"] {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 2px;
+}
+[data-testid="stMetricLabel"] {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.7;
+}
+[data-testid="stMetricValue"] {
+    font-weight: 700;
+}
+</style>
+"""
 
 
 def _render_metrics(metrics: dict) -> None:
-    row1 = st.columns(4)
-    row1[0].metric("Total events", metrics["total"])
-    row1[1].metric("CRITICAL", metrics["critical"])
-    row1[2].metric("Autonomous executed", metrics["executed_autonomous"])
-    row1[3].metric("Human-approved executed", metrics["executed_human_approved"])
+    """4x2 grid of bordered metric cards - a real number reads faster as a
+    scannable grid than as two anonymous rows of st.metric calls. Still
+    plain st.metric widgets underneath (not custom HTML) - the CSS
+    injected in main() (_APPROVE_REJECT_CSS) flips each card's internal
+    layout so the big bold value sits above its small uppercase label,
+    without giving up Streamlit's native metric styling/accessibility."""
+    cards = [
+        ("Total events", metrics["total"]),
+        ("CRITICAL", metrics["critical"]),
+        ("Autonomous executed", metrics["executed_autonomous"]),
+        ("Human-approved executed", metrics["executed_human_approved"]),
+        ("Vetoed by Gemma", metrics["vetoed_by_gemma"]),
+        ("Rejected by human", metrics["rejected_by_human"]),
+        ("Awaiting approval", metrics["awaiting_human_approval"]),
+        ("Blocked by budget", metrics["budget_insufficient"]),
+    ]
+    for row_start in (0, 4):
+        row = st.columns(4)
+        for col, (label, value) in zip(row, cards[row_start:row_start + 4]):
+            with col.container(border=True):
+                st.metric(label, value)
 
-    row2 = st.columns(4)
-    row2[0].metric("Vetoed by Gemma", metrics["vetoed_by_gemma"])
-    row2[1].metric("Rejected by human", metrics["rejected_by_human"])
-    row2[2].metric("Awaiting approval", metrics["awaiting_human_approval"])
-    row2[3].metric("Blocked by budget", metrics["budget_insufficient"])
-
-    st.caption(f"Gemma-authored rationale: {metrics['gemma_rationale_pct']:.0f}% (rest is deterministic fallback)")
+    st.markdown(
+        '<div style="margin-top:0.5rem;">'
+        '<span style="background-color:rgba(127,127,127,0.15);padding:3px 10px;'
+        'border-radius:999px;font-size:0.8rem;font-weight:600;">'
+        f"Gemma-authored rationale: {metrics['gemma_rationale_pct']:.0f}% "
+        "(rest is deterministic fallback)</span></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_all_decisions_table(entries: list[DecisionLogEntry]) -> None:
@@ -130,9 +189,42 @@ def _render_all_decisions_table(entries: list[DecisionLogEntry]) -> None:
     filtered = filter_entries(entries, selected_severities, selected_sources)
     st.caption(f"Showing {len(filtered)} of {len(entries)} logged decisions.")
     if filtered:
-        st.dataframe(entries_to_rows(filtered), width="stretch", hide_index=True)
+        df = pd.DataFrame(entries_to_rows(filtered), columns=ENTRY_ROW_COLUMNS)
+        styled = df.style.map(_severity_cell_style, subset=["severity"])
+        st.dataframe(
+            styled, width="stretch", hide_index=True,
+            column_config={
+                # Real bug this fixes: the default auto-sized column was
+                # clipping the full "YYYY-MM-DD HH:MM:SS+00:00" timestamp
+                # text for these two columns specifically - both wide
+                # enough to matter, unlike the other columns.
+                "time_of_closest_approach": st.column_config.DatetimeColumn(
+                    "time_of_closest_approach", width="medium", format="YYYY-MM-DD HH:mm:ss",
+                ),
+                "timestamp": st.column_config.DatetimeColumn(
+                    "timestamp", width="medium", format="YYYY-MM-DD HH:mm:ss",
+                ),
+            },
+        )
     else:
         st.caption("No decisions match the selected filters.")
+
+
+def _severity_cell_style(value: object) -> str:
+    """Pandas Styler callback (see _render_all_decisions_table) - the same
+    severity badge color palette as severity_badge_html, applied as a
+    real cell background rather than an HTML span, since st.dataframe
+    doesn't render arbitrary HTML inside cells. Text color comes from
+    SEVERITY_BADGE_TEXT_COLORS (not a flat white) for the same real WCAG
+    contrast reason severity_badge_html uses it - white-on-watch was only
+    a 2.94:1 contrast ratio."""
+    severity = str(value).lower()
+    color = SEVERITY_BADGE_COLORS.get(severity, "#6B7280")
+    text_color = SEVERITY_BADGE_TEXT_COLORS.get(severity, "white")
+    return (
+        f"background-color:{color};color:{text_color};font-weight:600;"
+        "text-align:center;text-transform:uppercase;border-radius:4px;"
+    )
 
 
 def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogEntry], operator: str) -> None:
@@ -145,7 +237,11 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
         plan = entry.decision.maneuver_plan
         raw = entry.telemetry.raw_data
         with st.container(border=True):
-            st.markdown(f"**{entry.telemetry.event_id}** — {raw.get('object_a_name')} vs {raw.get('object_b_name')}")
+            st.markdown(
+                f"**{entry.telemetry.event_id}** — {raw.get('object_a_name')} vs {raw.get('object_b_name')} "
+                f"{severity_badge_html(entry.finding.severity.value)}",
+                unsafe_allow_html=True,
+            )
             st.write(
                 f"Min distance: {raw.get('min_distance_km'):.2f} km  |  "
                 f"Proposed: {plan.direction}, ~{plan.magnitude_delta_v:.2f} m/s delta-v  |  "
@@ -164,14 +260,14 @@ def _render_pending_approvals(logger: DecisionLogger, pending: list[DecisionLogE
                     st.caption(urgency)
             st.caption(entry.decision.rationale)
             col_approve, col_reject = st.columns(2)
-            if col_approve.button("Approve", key=f"approve_{entry.telemetry.event_id}", type="primary"):
+            if col_approve.button("✓ Approve", key=f"approve_{entry.telemetry.event_id}", type="primary"):
                 try:
                     logger.approve_maneuver(entry.telemetry.event_id, approved=True, approved_by=operator)
                 except ValueError as exc:
                     st.error(f"Couldn't approve this maneuver: {exc}")
                 else:
                     st.rerun()
-            if col_reject.button("Reject", key=f"reject_{entry.telemetry.event_id}"):
+            if col_reject.button("✕ Reject", key=f"reject_{entry.telemetry.event_id}", type="secondary"):
                 try:
                     logger.approve_maneuver(entry.telemetry.event_id, approved=False, approved_by=operator)
                 except ValueError as exc:
@@ -199,7 +295,10 @@ def _render_needs_attention(logger: DecisionLogger, attention: list[DecisionLogE
         raw = entry.telemetry.raw_data
         subject = raw.get("object_name", entry.telemetry.event_id)
         with st.container(border=True):
-            st.markdown(f"**{entry.telemetry.event_id}** — {subject}")
+            st.markdown(
+                f"**{entry.telemetry.event_id}** — {subject} {severity_badge_html(entry.finding.severity.value)}",
+                unsafe_allow_html=True,
+            )
             if "perigee_altitude_km" in raw:
                 st.write(f"Perigee altitude: {raw['perigee_altitude_km']:.1f} km")
             elif "pointing_error_deg" in raw:
@@ -240,6 +339,7 @@ def _render_orbit_plot(entry: DecisionLogEntry) -> None:
                 data = fetch_trajectory_data(
                     raw["object_a_id"], raw.get("object_a_name", ""),
                     raw["object_b_id"], raw.get("object_b_name", ""),
+                    object_a_group=raw.get("object_a_group"), object_b_group=raw.get("object_b_group"),
                 )
             except Exception as exc:  # noqa: BLE001 - report and let the user retry
                 st.error(f"Couldn't fetch/propagate a live orbit plot: {exc}")
@@ -335,6 +435,39 @@ def _render_mission_log_search(entries: list[DecisionLogEntry], client: GemmaCli
             st.caption(f"Grounded in real logged entries: {', '.join(result['retrieved_event_ids'])}")
 
 
+# (field key in telemetry.raw_data, display label, format string) - only
+# whichever of these an entry's own hazard shape actually carries gets
+# shown (a conjunction has min_distance_km, a decay reading has
+# perigee_altitude_km, an attitude reading has pointing_error_deg/
+# solar_panel_power_pct - never all of them at once). See
+# _render_telemetry_summary below.
+_TELEMETRY_SUMMARY_FIELDS = [
+    ("min_distance_km", "Min distance (km)", "{:.2f}"),
+    ("perigee_altitude_km", "Perigee altitude (km)", "{:.1f}"),
+    ("pointing_error_deg", "Pointing error (deg)", "{:.1f}"),
+    ("solar_panel_power_pct", "Solar panel power (%)", "{:.0f}"),
+    ("collision_probability", "Collision probability (Pc)", "{:.2e}"),
+]
+
+
+def _render_telemetry_summary(entry: DecisionLogEntry) -> None:
+    """A side-by-side key-value row of this entry's real operational
+    metrics, pulled out ahead of the full nested JSON below so an
+    operator can read the numbers that actually matter (whichever this
+    entry's hazard type carries) without first expanding/scanning the raw
+    record. Gemma call latency is always present (every entry has a real
+    rationale_provenance), so it's always included."""
+    raw = entry.telemetry.raw_data
+    present = [
+        (label, fmt.format(raw[key]))
+        for key, label, fmt in _TELEMETRY_SUMMARY_FIELDS
+        if raw.get(key) is not None
+    ]
+    present.append(("Gemma latency (ms)", f"{entry.rationale_provenance.latency_ms:.0f}"))
+    for col, (label, value) in zip(st.columns(len(present)), present):
+        col.metric(label, value)
+
+
 def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry], operator: str) -> None:
     st.subheader("Inspect / mark reviewed")
     if not entries:
@@ -366,6 +499,11 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
     )
     selected = next(e for e in entries if e.telemetry.event_id == selected_id)
 
+    st.markdown(
+        f"**{selected.telemetry.event_id}** {severity_badge_html(selected.finding.severity.value)}",
+        unsafe_allow_html=True,
+    )
+    _render_telemetry_summary(selected)
     st.json(selected.model_dump(mode="json"))
     if selected.human_reviewed:
         st.caption(f"Already reviewed by {selected.reviewed_by} at {selected.human_reviewed_at}")
@@ -566,6 +704,7 @@ def _require_operator_identity() -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Deep Space Navigation - Mission Ops", layout="wide")
+    st.markdown(_APPROVE_REJECT_CSS, unsafe_allow_html=True)
     st.title("Deep Space Navigation — Mission Ops Dashboard")
     st.caption(
         "Live risk board and human-approval inbox over the real append-only audit log "
@@ -582,7 +721,10 @@ def main() -> None:
     st.divider()
 
     with st.sidebar:
-        st.header("Controls")
+        # Three visual sub-sections, in the order an operator actually
+        # needs them: who am I / what's configured, what's being watched,
+        # then the buttons that generate new activity.
+        st.subheader("⚙️ System Config & Auth")
         st.write(f"Configured Gemma backend: **{settings.gemma_backend}**")
         st.caption(
             "local (ollama) -> autonomous execution with Gemma's own GO/NO-GO veto review; "
@@ -590,12 +732,13 @@ def main() -> None:
         )
 
         st.divider()
+        st.subheader("🛰️ Active Monitors")
         _render_monitoring_status()
         _render_severity_threshold_status()
         _render_alert_status()
 
         st.divider()
-        st.subheader("Generate live activity")
+        st.subheader("🧪 Simulation Triggers")
         fetch_limit = st.number_input("CelesTrak results to fetch", min_value=1, max_value=50, value=5)
         if st.button("Fetch live CelesTrak conjunctions"):
             try:

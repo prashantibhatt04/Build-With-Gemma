@@ -1585,3 +1585,73 @@ one-line fix. Documentation-only - no code change, since the underlying
 behavior (the auth warning, the backend fallback, alerting) is all
 already correct; the gap was purely that a presenter had no checklist
 telling them to configure it beforehand.
+
+## Post-Phase-6 improvement — dashboard visual design pass
+
+A dedicated UI pass over `scripts/dashboard.py` and the two 3D Plotly
+builders (`src/orbit_plot_data.py`, `src/live_positions.py`), requested
+directly rather than found by a review agent. New `src/ui_style.py`
+centralizes the palette so every change below draws from one source of
+truth instead of five independently-chosen colors:
+
+- **3D plots.** Both the live tracking globe and the conjunction
+  trajectory plot: Earth rendered at 0.35 opacity (a marker on the far
+  side of the globe stays visible instead of being occluded), real
+  object category (crewed station / docked vehicle / debris-unmonitored
+  - `ui_style.classify_object_category`, inferred from a real object's
+  name and CelesTrak/Space-Track group, never fed back into any actual
+  severity decision) gets its own colored/shaped marker trace so Plotly
+  generates a real legend, faint `rgba(200,200,200,0.2)` grid lines, and
+  hover-only tooltips (Object Name/NORAD ID/Altitude/Status) replacing
+  the old persistent on-globe text labels that overlapped once more than
+  a couple of objects were close together.
+- **Metrics.** The top 8 KPI numbers are a real 4x2 grid of bordered
+  `st.container` cards; scoped CSS flips each `st.metric`'s internal
+  layout (`flex-direction: column-reverse`) so the big bold number sits
+  above its small uppercase label without giving up Streamlit's native
+  metric widget (still real `st.metric` calls, so `AppTest`'s
+  `at.metric` introspection is unaffected). The Gemma-rationale-percent
+  caption is now a subtle pill badge instead of plain caption text.
+- **Severity badges.** Every place a severity shows as a short string -
+  pending-approval/needs-attention card headers, the review panel, the
+  "All decisions" table (via a pandas Styler cell background, since
+  `st.dataframe` can't render inline HTML) - now uses the same
+  `ui_style.SEVERITY_BADGE_COLORS` pill. `src/trends.py`'s stacked-bar
+  chart colors were switched to the identical hex values, so a CRITICAL
+  bar and a CRITICAL badge are now provably the same red, not two
+  independently-chosen "close enough" reds.
+- **Approve/Reject.** A real, if minor, pre-existing bug this pass
+  found: `Approve` was already `type="primary"`, but this project has no
+  custom Streamlit theme, so "primary" renders in Streamlit's default
+  reddish coral - visually closer to a destructive action than an
+  affirming one. Scoped CSS (targeting the buttons' own unique
+  `approve_<event_id>`/`reject_<event_id>` keys via Streamlit's
+  `st-key-*` wrapper class, never a blanket `button[kind=...]` rule that
+  would also repaint Refresh/Sign out/Acknowledge) now forces a real
+  solid green Approve and a neutral red-outline Reject.
+- **Deep inspection.** The review panel shows a side-by-side key-metric
+  summary (whichever of min distance/perigee altitude/pointing error/
+  solar panel power/Gemma latency an entry's own hazard shape actually
+  carries) above the full nested JSON, instead of making an operator
+  scan the raw record first. The "All decisions" table's
+  `time_of_closest_approach`/`timestamp` columns got explicit
+  `DatetimeColumn` widths so the full timestamp no longer clips.
+- **Sidebar.** Regrouped into three labeled sections in the order an
+  operator actually needs them - "System Config & Auth" (backend
+  status), "Active Monitors" (watch list, thresholds, alerting), and
+  "Simulation Triggers" (the six activity-generating buttons) - instead
+  of one flat, unlabeled list.
+
+Live-verified in a real running dashboard (`streamlit run
+scripts/dashboard.py`) against the real accumulated log: the live
+tracking globe correctly split ISS/Tiangong/debris into three legend
+categories with a real hover tooltip ("HMU-SAT2, NORAD ID: 67688,
+Altitude: 360 km, Status: Docked Vehicle"), the metric-card grid,
+severity badges, and Approve/Reject styling all rendered exactly as
+designed. The conjunction orbit plot's new styling code is covered by
+`tests/test_orbit_plot_data.py` (updated for the new optional
+group/NORAD-id fields on `TrajectoryData`) but could not be
+live-clicked in this environment specifically - CelesTrak's own network
+was unreachable at verification time (confirmed independently via a
+direct `curl`, not an artifact of this change). 460 tests pass (8 new,
+in `tests/test_ui_style.py`).

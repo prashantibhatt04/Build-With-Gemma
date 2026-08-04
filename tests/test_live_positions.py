@@ -50,18 +50,33 @@ def test_fetch_live_positions_uses_disk_cache(mock_get, tmp_path):
     assert mock_get.call_count == 1
 
 
-def test_build_live_globe_figure_has_earth_and_one_marker_per_object():
+def test_build_live_globe_figure_has_earth_and_one_marker_trace_per_category():
+    """Real category (station/docked vehicle/debris - see
+    ui_style.classify_object_category) gets its own Scatter3d trace, not
+    one shared trace for every object - that's what gives the figure a
+    real Plotly legend mapping marker type to color/shape, rather than one
+    undifferentiated "Live position" trace."""
     positions = [
-        SatellitePosition(name="ISS (ZARYA)", norad_id="25544", x_km=6800.0, y_km=0.0, z_km=0.0, altitude_km=420.0),
-        SatellitePosition(name="TIANGONG", norad_id="48274", x_km=0.0, y_km=6750.0, z_km=100.0, altitude_km=380.0),
+        SatellitePosition(
+            name="ISS (ZARYA)", norad_id="25544", x_km=6800.0, y_km=0.0, z_km=0.0,
+            altitude_km=420.0, category="station",
+        ),
+        SatellitePosition(
+            name="PROGRESS MS-25", norad_id="48274", x_km=0.0, y_km=6750.0, z_km=100.0,
+            altitude_km=380.0, category="docked_vehicle",
+        ),
     ]
 
     fig = build_live_globe_figure(positions)
 
-    # Earth surface + one combined marker trace for every satellite.
-    assert len(fig.data) == 2
-    marker_trace = next(t for t in fig.data if t.name == "Live position")
-    assert list(marker_trace.x) == [6800.0, 0.0]
-    assert list(marker_trace.y) == [0.0, 6750.0]
-    assert list(marker_trace.z) == [0.0, 100.0]
-    assert list(marker_trace.text) == ["ISS (ZARYA)", "TIANGONG"]
+    # Earth surface + one trace per distinct category present (2 here).
+    assert len(fig.data) == 3
+    station_trace = next(t for t in fig.data if t.name == "Crewed Station")
+    docked_trace = next(t for t in fig.data if t.name == "Docked Vehicle")
+    assert list(station_trace.x) == [6800.0]
+    assert list(station_trace.text) == ["ISS (ZARYA)"]
+    assert list(docked_trace.x) == [0.0]
+    assert list(docked_trace.text) == ["PROGRESS MS-25"]
+    # No persistent on-globe text labels - hover-only (mode="markers").
+    assert station_trace.mode == "markers"
+    assert station_trace.hovertemplate is not None

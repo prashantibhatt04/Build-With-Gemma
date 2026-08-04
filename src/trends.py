@@ -20,9 +20,14 @@ from datetime import date
 import plotly.graph_objects as go
 
 from .schemas import DecisionLogEntry
+from .ui_style import SEVERITY_BADGE_COLORS
 
 SEVERITY_ORDER = ["nominal", "watch", "warning", "critical"]
-SEVERITY_COLORS = {"nominal": "#2ca02c", "watch": "#bcbd22", "warning": "#ff7f0e", "critical": "#d62728"}
+# Same hex values as the dashboard's own severity badges (ui_style.py) -
+# a CRITICAL bar in this chart is the same red as a CRITICAL badge
+# anywhere else in the dashboard, not a separate, only-coincidentally-
+# similar color chosen independently for charts.
+SEVERITY_COLORS = SEVERITY_BADGE_COLORS
 
 # Real, LIVE scans only - not the synthetic fixtures
 # (SyntheticCriticalAdapter, SyntheticAttitudeAdapter) or the historical

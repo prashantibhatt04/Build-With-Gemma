@@ -54,6 +54,40 @@ Gemma backend is configured.
 
 ---
 
+## Before a live/investor demo
+
+Three real `.env` settings genuinely change what a first-time viewer
+sees on the dashboard's very first screen - worth checking before
+presenting live, not because anything is broken, but because each is a
+real behavior change that's easy to forget you left at its zero-setup
+default:
+
+- **`OPERATOR_TOKENS`** - unset by default (the zero-setup dev
+  experience), which means the dashboard's very first thing rendered,
+  above all content, is a real `⚠️ Unauthenticated dashboard` warning
+  (see `src/auth.py`). It's correct, intentional behavior - not a bug -
+  but it's a rough first impression for an audience that can't parse
+  what it means in the two seconds before you move on. Set
+  `OPERATOR_TOKENS=name:token` so the dashboard opens straight into
+  `Signed in as <name>` instead.
+- **`GEMMA_BACKEND`** - already covered above ("Setup on a new
+  machine"): if it's `ollama` but the machine has no Ollama models
+  installed (or none running), every single Gemma call silently falls
+  over to the real cloud API anyway (Phase 4's cross-backend fallback -
+  see `GemmaClient`) - functionally correct, but ~10x slower per call
+  with a wasted local-timeout delay first. Set it to `api` explicitly if
+  that's really what's answering, both for speed and honesty about
+  which backend is live.
+- **`ALERT_WEBHOOK_URL`** - if you're planning to show real-time
+  CRITICAL alerting (Stage 5c below) live, configure this beforehand and
+  use the dashboard sidebar's real "Send test alert" button to confirm
+  it's actually reaching your channel - the same kind of test-alert
+  capability PagerDuty/Datadog/UptimeRobot already have, closing the gap
+  where the first real signal a broken webhook gives you is silence
+  during the actual CRITICAL-event demo.
+
+---
+
 ## Quick start: the one-file guided demo
 
 Everything below (Stages 0, 2, and 5) is also available as a single,

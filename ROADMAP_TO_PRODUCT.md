@@ -1564,3 +1564,24 @@ before/after verification, not just an assertion: confirmed both tests
 FAIL with the exact reported symptom when the `key=` fix is reverted
 (`git stash`'d for the check, then restored), and PASS with it in
 place. Full suite: 452/452.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 8: a "before a live demo" checklist in DEMO.md
+
+The last VC-demo-lens finding wasn't a bug: the dashboard's
+`⚠️ Unauthenticated dashboard` warning (`src/auth.py`) is real,
+correct, intentional behavior when `OPERATOR_TOKENS` is unset - not
+something to hide or weaken just because it's the first thing a VC
+audience sees. But `DEMO.md` (this project's own live-demo walkthrough
+doc) never mentioned it, or two other real `.env` settings that
+likewise change what a first-time viewer sees on first load
+(`GEMMA_BACKEND` - already indirectly covered, and `ALERT_WEBHOOK_URL`,
+directly tied to the "Send test alert" capability added earlier this
+sweep).
+
+Added a "Before a live/investor demo" section right after `DEMO.md`'s
+existing "Setup on a new machine" section, covering all three settings
+concretely: what each one changes about first impressions, and the
+one-line fix. Documentation-only - no code change, since the underlying
+behavior (the auth warning, the backend fallback, alerting) is all
+already correct; the gap was purely that a presenter had no checklist
+telling them to configure it beforehand.

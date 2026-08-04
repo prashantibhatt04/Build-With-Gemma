@@ -1532,3 +1532,35 @@ CRITICAL run and a same-day repeat historical replay both confirmed to
 still alert (not suppressed), and a real `celestrak`-sourced repeat
 confirmed to still be suppressed exactly as before - the exemption is
 narrowly scoped, not a blanket disable. Full suite: 450/450.
+
+## Post-Phase-6 improvement — VC-demo readiness sweep, fix 7: dashboard filters/event selection silently reset on new data
+
+The same background review's last finding: `scripts/dashboard.py`'s
+`st.selectbox("Event", ...)` (the "Inspect / mark reviewed" panel) and
+the two `st.multiselect("Filter by severity"/"Filter by source", ...)`
+calls (the "All decisions" table) had no explicit, stable `key=`.
+Streamlit partly derives a widget's identity from its `options`
+argument when no key is given - and both `options` lists grow every
+time the log grows (a new entry logged by a background scheduler tick,
+another operator's action, or clicking any sidebar fetch button). An
+operator mid-review of a specific, deliberately-selected OLDER event,
+or filtered down to just CRITICALs, had that state silently reverted
+- back to the newest event, or an empty filter - the moment new data
+arrived in the background. No crash, no error, just quietly wrong UI
+state for whoever was mid-review.
+
+Fixed by giving all three widgets an explicit, fixed `key=` -
+`review_panel_event_select`, `all_decisions_severity_filter`,
+`all_decisions_source_filter` - none of which are tied to the changing
+`options` list, so Streamlit correctly finds the real previously-
+selected value in the new, longer options list and keeps it selected
+instead of resetting.
+
+2 new tests in `tests/test_dashboard_app.py`, each logging a real entry
+via a real `DecisionLogger` into an isolated `tmp_path` log dir,
+selecting a real filter/event value, then logging ANOTHER real entry
+mid-session (simulating background activity) before re-running - real
+before/after verification, not just an assertion: confirmed both tests
+FAIL with the exact reported symptom when the `key=` fix is reverted
+(`git stash`'d for the check, then restored), and PASS with it in
+place. Full suite: 452/452.

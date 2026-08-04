@@ -8,12 +8,15 @@ file only confirms the UI wiring itself doesn't crash and exposes the
 controls it's supposed to.
 """
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from src.config import settings
+from src.logging_utils import DecisionLogger
+from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent
 
 DASHBOARD_PATH = str(Path(__file__).resolve().parent.parent / "scripts" / "dashboard.py")
 
@@ -305,3 +308,83 @@ def test_dashboard_shows_spacetrack_button_when_credentials_configured():
 
     button_labels = {b.label for b in at.sidebar.button}
     assert any("Space-Track" in label for label in button_labels)
+
+
+@contextmanager
+def _log_dir(tmp_path):
+    """Same object.__setattr__-on-the-shared-singleton pattern as
+    _operator_tokens/_watched_norad_ids above - points the dashboard's
+    real DecisionLogger at an isolated tmp_path so these tests can
+    control the exact real log content (needed to actually reproduce a
+    real "new entry arrives mid-session" scenario, not just assert on
+    whatever's ambiently in the real log)."""
+    original = settings.log_dir
+    object.__setattr__(settings, "log_dir", str(tmp_path))
+    try:
+        yield
+    finally:
+        object.__setattr__(settings, "log_dir", original)
+
+
+def _widget_test_entry(event_id: str, severity: Severity) -> DecisionLogEntry:
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="celestrak",
+        raw_data={"object_a_name": "SAT-A", "object_b_name": "SAT-B", "min_distance_km": 50.0},
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=severity, description="Test.", confidence=0.8)
+    decision = Decision(action="continue", rationale="Test rationale.", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0),
+    )
+
+
+def test_dashboard_severity_filter_survives_new_data_arriving_mid_session(tmp_path):
+    """Real bug this guards against: without an explicit, stable widget
+    key, Streamlit partly derives a multiselect's identity from its
+    options list - which grows every time the log grows. An operator's
+    active severity filter was silently reverting to empty the moment
+    background activity (e.g. a scheduler tick) changed what severities
+    were present in the log - no crash, just quietly wrong UI state."""
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        logger.log(_widget_test_entry("e1", Severity.WATCH))
+        logger.log(_widget_test_entry("e2", Severity.CRITICAL))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+        severity_filter = next(m for m in at.multiselect if m.label == "Filter by severity")
+        severity_filter.set_value(["watch"]).run(timeout=30)
+        assert severity_filter.value == ["watch"]
+
+        # New data arrives mid-session (e.g. a real scheduler tick, or
+        # another operator's action) - the options list changes shape.
+        logger.log(_widget_test_entry("e3", Severity.NOMINAL))
+        at.run(timeout=30)  # simulates clicking "Refresh"
+
+        severity_filter = next(m for m in at.multiselect if m.label == "Filter by severity")
+        assert severity_filter.value == ["watch"]  # real selection survived, not reset to []
+
+
+def test_dashboard_event_selection_survives_new_data_arriving_mid_session(tmp_path):
+    """Same real bug, for the "Inspect / mark reviewed" event dropdown -
+    an operator mid-review of a specific, deliberately-selected OLDER
+    event must not be silently bounced back to the newest entry just
+    because a new one was logged in the background."""
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        logger.log(_widget_test_entry("older-event", Severity.WATCH))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        at.run(timeout=30)
+
+        event_select = next(sb for sb in at.selectbox if sb.label == "Event")
+        event_select.set_value("older-event").run(timeout=30)
+        assert event_select.value == "older-event"
+
+        logger.log(_widget_test_entry("newer-event", Severity.CRITICAL))  # new entry arrives
+        at.run(timeout=30)  # simulates clicking "Refresh"
+
+        event_select = next(sb for sb in at.selectbox if sb.label == "Event")
+        assert event_select.value == "older-event"  # real selection survived, not reset to newest

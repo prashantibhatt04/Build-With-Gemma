@@ -110,8 +110,22 @@ def _render_all_decisions_table(entries: list[DecisionLogEntry]) -> None:
     all_severities = sorted({e.finding.severity.value for e in entries})
     all_sources = sorted({e.telemetry.source for e in entries})
     filter_cols = st.columns(2)
-    selected_severities = filter_cols[0].multiselect("Filter by severity", all_severities)
-    selected_sources = filter_cols[1].multiselect("Filter by source", all_sources)
+    # Real bug this fixes: without an explicit, STABLE key, Streamlit
+    # partly derives a widget's identity from its `options` argument -
+    # which changes every time the underlying log grows (a new severity/
+    # source value shows up, or entries_to_rows' set ordering shifts).
+    # An operator's active filter selection was silently reverting to
+    # empty the moment background activity (e.g. a scheduler tick, or
+    # clicking a sidebar fetch button) changed what's in the log - no
+    # crash, just quietly wrong UI state mid-review. A fixed key isn't
+    # tied to `options` at all, so the real selected value survives a
+    # rerun even as the available options list changes underneath it.
+    selected_severities = filter_cols[0].multiselect(
+        "Filter by severity", all_severities, key="all_decisions_severity_filter",
+    )
+    selected_sources = filter_cols[1].multiselect(
+        "Filter by source", all_sources, key="all_decisions_source_filter",
+    )
 
     filtered = filter_entries(entries, selected_severities, selected_sources)
     st.caption(f"Showing {len(filtered)} of {len(entries)} logged decisions.")
@@ -337,7 +351,19 @@ def _render_review_panel(logger: DecisionLogger, entries: list[DecisionLogEntry]
         row = rows_by_id[event_id]
         return f"[{row['severity'].upper()}] {row['subject']} — {event_id}"
 
-    selected_id = st.selectbox("Event", event_ids, format_func=_event_label)
+    # Real bug this fixes: without an explicit, STABLE key, Streamlit
+    # partly derives this widget's identity from `event_ids` - which
+    # grows every time a new entry is logged (e.g. a concurrent
+    # scheduler tick, or clicking a sidebar fetch button while reviewing
+    # an older event). An operator mid-review of a specific, deliberately
+    # -selected older event was silently reverted back to the newest
+    # entry the moment new data arrived - no crash, just quietly wrong
+    # UI state. A fixed key isn't tied to the options list at all, so
+    # Streamlit finds the real previously-selected value in the new,
+    # longer list and keeps it selected instead of resetting.
+    selected_id = st.selectbox(
+        "Event", event_ids, format_func=_event_label, key="review_panel_event_select",
+    )
     selected = next(e for e in entries if e.telemetry.event_id == selected_id)
 
     st.json(selected.model_dump(mode="json"))

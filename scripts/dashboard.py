@@ -1067,13 +1067,13 @@ def _require_operator_identity() -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Deep Space Navigation - Mission Ops", layout="wide")
+    st.set_page_config(page_title="ConjunctionWatch: Mission Ops", layout="wide")
     st.markdown(_APPROVE_REJECT_CSS, unsafe_allow_html=True)
     st.markdown(_METRIC_VALUE_TYPOGRAPHY_CSS, unsafe_allow_html=True)
     st.markdown(_SEVERITY_CARD_BORDER_CSS, unsafe_allow_html=True)
     st.markdown(_KPI_TINT_CSS, unsafe_allow_html=True)
     st.markdown(_DENSITY_CSS, unsafe_allow_html=True)
-    st.title("Deep Space Navigation — Mission Ops Dashboard")
+    st.title("ConjunctionWatch: Mission Ops Dashboard")
     st.caption(
         "Live risk board and human-approval inbox over the real append-only audit log "
         "(logs/decisions-*.jsonl) - not a mock, not a second copy of the pipeline."

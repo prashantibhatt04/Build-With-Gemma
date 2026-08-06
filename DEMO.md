@@ -861,7 +861,7 @@ next call gets a real "half-open" probe.
 python -m pytest -v
 ```
 
-**What it proves:** 221 tests, all green - orbital math (including the
+**What it proves:** 471 tests, all green - orbital math (including the
 decomposed coarse/fine search used for scalable screening), TLE parsing
 and the shared `tle_source.py` fetch/cache module, the CelesTrak
 adapter's cross-group conjunction screening (mocked network), the decay

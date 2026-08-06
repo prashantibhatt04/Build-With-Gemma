@@ -113,5 +113,13 @@ def build_live_globe_figure(positions: list[SatellitePosition]) -> go.Figure:
         title="Real crewed stations — current positions",
         margin=dict(l=0, r=0, t=40, b=0),
         showlegend=True,
+        # Plotly's own default (450px) left a real, visible band of empty
+        # space around the globe compared to the densely-packed decisions
+        # table elsewhere on the page (a design-review pass measured it
+        # directly: same default height, way less content actually using
+        # it) - 400px keeps the globe fully legible while closing part of
+        # that gap; see also the tightened st.divider() spacing in
+        # scripts/dashboard.py's _DENSITY_CSS for the rest of it.
+        height=400,
     )
     return fig

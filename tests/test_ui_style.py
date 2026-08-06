@@ -1,11 +1,22 @@
 """Tests for src/ui_style.py - pure functions, no Streamlit/Plotly involved."""
+import colorsys
+
 from src.ui_style import (
     CATEGORY_STYLE,
     SEVERITY_BADGE_COLORS,
     SEVERITY_BADGE_TEXT_COLORS,
     classify_object_category,
+    muted_severity_rgba,
     severity_badge_html,
+    system_note_html,
 )
+
+
+def _hue_degrees(hex_color: str) -> float:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, _l, _s = colorsys.rgb_to_hls(r, g, b)
+    return h * 360
 
 
 def test_classify_object_category_recognizes_known_station_names():
@@ -67,3 +78,40 @@ def test_critical_badge_still_uses_white_text():
     html = severity_badge_html("critical")
     assert SEVERITY_BADGE_TEXT_COLORS["critical"] == "white"
     assert "color:white" in html
+
+
+def test_watch_and_warning_hues_are_widely_separated():
+    """Regression test: a design-review pass found the original WATCH/
+    WARNING colors (both orange-ish golds, ~20 degrees apart in hue) too
+    close to reliably distinguish for red-green color vision deficiency,
+    especially as adjacent segments in a stacked bar chart. They must
+    stay at least 25 degrees apart, with WATCH the more yellow of the two
+    (higher hue) and WARNING the more red-orange (lower hue)."""
+    watch_hue = _hue_degrees(SEVERITY_BADGE_COLORS["watch"])
+    warning_hue = _hue_degrees(SEVERITY_BADGE_COLORS["warning"])
+    assert watch_hue - warning_hue >= 25
+    assert watch_hue > warning_hue > _hue_degrees(SEVERITY_BADGE_COLORS["critical"])
+
+
+def test_system_note_html_uses_a_neutral_tone_not_a_severity_color():
+    html = system_note_html("Some config reminder.")
+    assert "Some config reminder." in html
+    # None of the four severity hex colors should leak into a system note.
+    for color in SEVERITY_BADGE_COLORS.values():
+        assert color not in html
+
+
+def test_system_note_html_omits_icon_when_message_already_carries_one():
+    html = system_note_html("🔕 Already has an icon.", icon="")
+    assert html.count("🔕") == 1
+
+
+def test_muted_severity_rgba_carries_the_same_hue_as_the_badge():
+    rgba = muted_severity_rgba("critical", alpha=0.8)
+    assert rgba.startswith("rgba(220, 38, 38")
+    assert "0.8" in rgba
+
+
+def test_muted_severity_rgba_handles_unknown_severity_without_crashing():
+    rgba = muted_severity_rgba("mystery")
+    assert rgba.startswith("rgba(")

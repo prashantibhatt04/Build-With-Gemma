@@ -205,5 +205,6 @@ def build_3d_trajectory_figure(data: TrajectoryData) -> go.Figure:
         title=f"{data.object_a_name} vs {data.object_b_name} — real propagated trajectories",
         margin=dict(l=0, r=0, t=40, b=0),
         showlegend=True,
+        height=400,  # see live_positions.build_live_globe_figure's height=400 comment
     )
     return fig

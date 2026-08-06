@@ -18,20 +18,28 @@ from typing import Optional
 
 # Section 3 of the dashboard UI spec: one fixed hex per severity, reused
 # everywhere a severity is shown as a short status string - badges, chart
-# series, table cells - so CRITICAL always means the same red, everywhere.
+# series, table cells, card left-borders - so CRITICAL always means the
+# same red, everywhere. WARNING and WATCH are deliberately pushed apart in
+# hue (a ~30 degree gap, vs. ~20 degrees originally) - a design-review
+# pass found the original two ("#EA580C"/"#CA8A04", both orange-ish golds)
+# too close for anyone with red-green color vision deficiency to reliably
+# tell apart at a glance, especially as adjacent segments in the Trends
+# stacked bar chart. WARNING now reads as a real red-orange, WATCH as a
+# clear yellow - CRITICAL/red, WARNING/red-orange, WATCH/yellow,
+# NOMINAL/green are each a distinct hue family, not just a shade apart.
 SEVERITY_BADGE_COLORS = {
     "critical": "#DC2626",
-    "warning": "#EA580C",
-    "watch": "#CA8A04",
+    "warning": "#DD450E",
+    "watch": "#EBB60A",
     "nominal": "#16A34A",
 }
 _DEFAULT_BADGE_COLOR = "#6B7280"  # unrecognized severity value - neutral grey, not silently invisible
 
 # Text color per badge background, picked for real WCAG contrast rather
-# than assuming white always reads cleanly - white-on-#CA8A04 (watch) is
-# only a 2.94:1 contrast ratio (fails WCAG AA's 4.5:1 for normal text),
-# and white-on-warning/nominal are both marginal (~3.3-3.6:1). Dark text
-# (#111827) clears 4.5:1 against warning/watch/nominal; critical (#DC2626)
+# than assuming white always reads cleanly - white text on any of the
+# warning/watch/nominal backgrounds falls well under WCAG AA's 4.5:1
+# minimum for normal text (watch's clear yellow is the worst, ~1.9:1).
+# Dark text (#111827) clears 4.5:1 against all three; critical (#DC2626)
 # is the one background dark red enough that white still reads best there
 # (4.83:1 white vs 4.35:1 dark).
 _DARK_BADGE_TEXT = "#111827"
@@ -84,6 +92,69 @@ def classify_object_category(name: str, group: Optional[str] = None) -> str:
     if group_lower == "stations":
         return "docked_vehicle"
     return "debris"
+
+
+# A neutral blue-gray tone for app/config-state notices (auth, alerting,
+# monitoring setup) - deliberately a different hue FAMILY from the
+# severity palette above (blue-gray vs. red/orange/yellow/green), not
+# just a different shade of the same warning color. A design-review pass
+# found these config reminders ("OPERATOR_TOKENS is not configured", "..
+# webhook alerting is not configured") were sharing the same yellow/amber
+# family as a real WATCH-severity finding, reading as a risk finding when
+# they're really just "you haven't set this up yet" notes about the app
+# itself, not about anything actually being tracked as dangerous.
+SYSTEM_NOTE_BG = "rgba(100, 116, 139, 0.12)"
+SYSTEM_NOTE_BORDER = "rgba(100, 116, 139, 0.4)"
+
+
+def system_note_html(message: str, icon: str = "info") -> str:
+    """A neutral blue-gray notice box for app/config state, standing in
+    for st.warning/st.info for this specific category of message (not a
+    replacement for those elsewhere - src/alerting.py-triggered real
+    findings, error states, and success confirmations are untouched).
+    Text color is left unset so it inherits Streamlit's own theme text
+    color - light and dark mode both handled automatically without a
+    separate light/dark branch, only the translucent background/border
+    carry the tint. Rendered via st.markdown(..., unsafe_allow_html=True).
+
+    `icon` is a bare Material Symbols icon name (e.g. "warning", not
+    ":material/warning:") - Streamlit's `:material/icon_name:` shortcode
+    only expands when text passes through Streamlit's own markdown
+    pipeline, which this raw HTML div bypasses (confirmed live: the
+    shortcode rendered as literal text here instead of an icon). The span
+    below replicates the exact markup Streamlit itself generates for a
+    working icon (inspected from a real rendered st.subheader) - same
+    "Material Symbols Rounded" font-family ligature technique, just
+    built by hand since the shortcode preprocessor never sees this
+    string. Pass icon="" for no icon at all."""
+    if icon:
+        icon_span = (
+            f'<span aria-hidden="true" style="display:inline-block;'
+            f'font-family:\'Material Symbols Rounded\';font-weight:400;'
+            f'vertical-align:bottom;white-space:nowrap;margin-right:0.35rem;">{icon}</span>'
+        )
+        body = f"{icon_span}{message}"
+    else:
+        body = message
+    return (
+        f'<div style="background-color:{SYSTEM_NOTE_BG};border:1px solid {SYSTEM_NOTE_BORDER};'
+        f'border-radius:0.5rem;padding:0.75rem 1rem;font-size:0.925rem;line-height:1.5;">'
+        f"{body}</div>"
+    )
+
+
+def muted_severity_rgba(severity: str, alpha: float = 0.8) -> str:
+    """The same SEVERITY_BADGE_COLORS hue as an rgba() string instead of
+    an opaque hex - used to tint just a KPI number's text color (never a
+    filled badge/background) for a risk-indicating count, without
+    introducing a second, separately-chosen "risk color" palette. Alpha
+    (not a hand-picked lighter hex) is what makes it read as "muted" -
+    partial opacity blends toward the page's own background, so the same
+    value looks like a soft tint in both light and dark theme without
+    needing a separate light/dark branch."""
+    color = SEVERITY_BADGE_COLORS.get(severity.lower(), _DEFAULT_BADGE_COLOR)
+    r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r}, {g}, {b}, {alpha})"
 
 
 def severity_badge_html(severity: str) -> str:

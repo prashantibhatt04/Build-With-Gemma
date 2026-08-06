@@ -8,7 +8,7 @@ file only confirms the UI wiring itself doesn't crash and exposes the
 controls it's supposed to.
 """
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,9 +16,25 @@ from streamlit.testing.v1 import AppTest
 
 from src.config import settings
 from src.logging_utils import DecisionLogger
+from src.maneuver import compute_avoidance_maneuver
 from src.schemas import AnomalyFinding, Decision, DecisionLogEntry, GemmaProvenance, Severity, TelemetryEvent
 
 DASHBOARD_PATH = str(Path(__file__).resolve().parent.parent / "scripts" / "dashboard.py")
+
+# scripts/dashboard.py no longer uses st.tabs() (see _SECTION_NAV_CSS's
+# docstring there for why - a real glide-data-grid zero-width-container
+# bug that only a session-state-tracked section, never st.tabs(), can
+# fix). The active section is plain st.session_state under this key, so
+# any test that asserts on a non-default section's content must set it
+# BEFORE the first .run(), the same way every other ambient-config test
+# in this file (_operator_tokens, _log_dir, ...) pre-seeds state before
+# the script ever executes.
+_ACTIVE_SECTION_KEY = "active_section"
+
+
+def _open_section(at: AppTest, label: str) -> AppTest:
+    at.session_state[_ACTIVE_SECTION_KEY] = label
+    return at
 
 
 @contextmanager
@@ -105,7 +121,7 @@ def test_dashboard_all_decisions_has_severity_and_source_filters(tmp_path):
         logger.log(_widget_test_entry("e1", Severity.WATCH))
 
         at = AppTest.from_file(DASHBOARD_PATH)
-        at.run(timeout=30)
+        _open_section(at, "Full Log").run(timeout=30)
 
         multiselect_labels = {m.label for m in at.multiselect}
         assert {"Filter by severity", "Filter by source"} <= multiselect_labels
@@ -114,11 +130,15 @@ def test_dashboard_all_decisions_has_severity_and_source_filters(tmp_path):
 
 def test_dashboard_severity_filter_narrows_the_all_decisions_table():
     at = AppTest.from_file(DASHBOARD_PATH)
-    at.run(timeout=30)
+    _open_section(at, "Full Log").run(timeout=30)
 
-    total_before = next(int(m.value) for m in at.metric if m.label == "Total events")
-    if total_before == 0:
+    # "Total events" (an Overview-only metric) isn't rendered while Full
+    # Log is the active section - the filters' own presence is the real
+    # "is the log empty" signal now (see _render_all_decisions_table's
+    # early return, which skips rendering them entirely for zero entries).
+    if not any(m.label == "Filter by severity" for m in at.multiselect):
         return  # nothing to narrow in an empty log - covered by the empty-state test instead
+    total_before = int(next(c.value for c in at.caption if c.value.startswith("Showing")).split()[3])
 
     severity_filter = next(m for m in at.multiselect if m.label == "Filter by severity")
     # Narrow to a single severity actually present, so the filtered count
@@ -137,10 +157,13 @@ def test_dashboard_review_panel_event_dropdown_is_labeled_not_a_bare_event_id():
     "conj-33765-33818") with no severity or subject - unusable for
     triage without already knowing which id corresponds to what."""
     at = AppTest.from_file(DASHBOARD_PATH)
-    at.run(timeout=30)
+    _open_section(at, "Full Log").run(timeout=30)
 
-    total = next(int(m.value) for m in at.metric if m.label == "Total events")
-    if total == 0:
+    # "Total events" (an Overview-only metric) isn't rendered while Full
+    # Log is the active section - the "Event" dropdown's own presence is
+    # the real "is the log empty" signal now (see _render_review_panel's
+    # early return, which skips rendering it entirely for zero entries).
+    if not any(sb.label == "Event" for sb in at.selectbox):
         return  # nothing to label - covered by the "no logged decisions" caption elsewhere
 
     event_dropdown = next(sb for sb in at.selectbox if sb.label == "Event")
@@ -153,7 +176,7 @@ def test_dashboard_shows_needs_attention_section():
     section they'd be indistinguishable from NOMINAL/WATCH noise in the
     "All decisions" table."""
     at = AppTest.from_file(DASHBOARD_PATH)
-    at.run(timeout=30)
+    _open_section(at, "Approvals & Attention").run(timeout=30)
 
     assert any("Needs attention" in h.value for h in at.subheader)
 
@@ -163,7 +186,11 @@ def test_dashboard_shows_unauthenticated_warning_when_operator_tokens_unset():
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=30)
 
-    assert any("Unauthenticated" in w.value for w in at.warning)
+    # Rendered as a neutral system-note markdown box (ui_style.system_note_html),
+    # not st.warning - a design-review pass found st.warning's native
+    # yellow shared the same hue family as a real WATCH-severity badge,
+    # reading as a risk finding when it's really just a config reminder.
+    assert any("Unauthenticated" in m.value for m in at.markdown)
     # Content still renders in this mode - free-text operator name, same
     # behavior as before this phase.
     assert len(at.metric) > 0
@@ -218,7 +245,9 @@ def test_dashboard_shows_demo_group_notice_when_no_watch_list_configured():
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=30)
 
-    assert any("stations" in i.value and "WATCHED_NORAD_IDS" in i.value for i in at.sidebar.info)
+    # Neutral system-note markdown box, not st.sidebar.info - see
+    # ui_style.system_note_html.
+    assert any("stations" in m.value and "WATCHED_NORAD_IDS" in m.value for m in at.sidebar.markdown)
 
 
 def test_dashboard_shows_real_asset_notice_when_watch_list_configured():
@@ -292,7 +321,9 @@ def test_dashboard_shows_unconfigured_alert_notice_when_webhook_unset():
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=30)
 
-    assert any("not configured" in i.value and "ALERT_WEBHOOK_URL" in i.value for i in at.sidebar.info)
+    # Neutral system-note markdown box, not st.sidebar.info - see
+    # ui_style.system_note_html.
+    assert any("not configured" in m.value and "ALERT_WEBHOOK_URL" in m.value for m in at.sidebar.markdown)
     assert not any(b.label == "Send test alert" for b in at.sidebar.button)
 
 
@@ -366,7 +397,7 @@ def test_dashboard_severity_filter_survives_new_data_arriving_mid_session(tmp_pa
         logger.log(_widget_test_entry("e2", Severity.CRITICAL))
 
         at = AppTest.from_file(DASHBOARD_PATH)
-        at.run(timeout=30)
+        _open_section(at, "Full Log").run(timeout=30)
 
         severity_filter = next(m for m in at.multiselect if m.label == "Filter by severity")
         severity_filter.set_value(["watch"]).run(timeout=30)
@@ -391,7 +422,7 @@ def test_dashboard_event_selection_survives_new_data_arriving_mid_session(tmp_pa
         logger.log(_widget_test_entry("older-event", Severity.WATCH))
 
         at = AppTest.from_file(DASHBOARD_PATH)
-        at.run(timeout=30)
+        _open_section(at, "Full Log").run(timeout=30)
 
         event_select = next(sb for sb in at.selectbox if sb.label == "Event")
         event_select.set_value("older-event").run(timeout=30)
@@ -402,3 +433,112 @@ def test_dashboard_event_selection_survives_new_data_arriving_mid_session(tmp_pa
 
         event_select = next(sb for sb in at.selectbox if sb.label == "Event")
         assert event_select.value == "older-event"  # real selection survived, not reset to newest
+
+
+def _pending_approval_entry(event_id: str, tca_iso: str) -> DecisionLogEntry:
+    """A full CRITICAL conjunction entry awaiting human approval, with a
+    caller-chosen time_of_closest_approach so both an already-passed TCA
+    and a still-ahead one can be exercised."""
+    plan = compute_avoidance_maneuver(object_a="1", object_b="2", min_distance_km=2.0, relative_velocity_km_s=5.0)
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="celestrak",
+        raw_data={
+            "object_a_id": "1", "object_a_name": "SAT-A",
+            "object_b_id": "2", "object_b_name": "SAT-B",
+            "min_distance_km": 2.0, "time_of_closest_approach": tca_iso,
+            "relative_velocity_km_s": 5.0,
+        },
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=Severity.CRITICAL, description="Test.", confidence=0.9)
+    decision = Decision(
+        action="abort", rationale="Test rationale.", made_at=datetime.now(timezone.utc),
+        maneuver_plan=plan, awaiting_human_approval=True,
+    )
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0),
+    )
+
+
+def test_dashboard_approve_button_disabled_when_tca_already_passed(tmp_path):
+    """Real bug this fixes: the warning text alone ("approving this
+    maneuver no longer has any effect") didn't stop the Approve button
+    itself from rendering as a normal, fully clickable primary button -
+    a stale maneuver's Approve control must be genuinely disabled, not
+    just annotated."""
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        logger.log(_pending_approval_entry("expired-1", "2020-01-01T00:00:00+00:00"))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        _open_section(at, "Approvals & Attention").run(timeout=30)
+
+        approve_button = next(b for b in at.button if b.key == "approve_expired-1")
+        assert approve_button.disabled is True
+        # Reject stays enabled - closing out a stale item is still useful.
+        reject_button = next(b for b in at.button if b.key == "reject_expired-1")
+        assert reject_button.disabled is False
+
+
+def test_dashboard_approve_button_enabled_when_tca_still_ahead(tmp_path):
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        future_tca = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+        logger.log(_pending_approval_entry("future-1", future_tca))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        _open_section(at, "Approvals & Attention").run(timeout=30)
+
+        approve_button = next(b for b in at.button if b.key == "approve_future-1")
+        assert approve_button.disabled is False
+
+
+def _attitude_attention_entry(event_id: str) -> DecisionLogEntry:
+    """A CRITICAL attitude-hazard entry shaped like needs_attention()
+    expects (no maneuver_plan, not yet reviewed) - real event_id, but the
+    same object/pointing-error reading every caller in a group shares."""
+    telemetry = TelemetryEvent(
+        event_id=event_id, timestamp=datetime.now(timezone.utc), source="synthetic-attitude-fixture",
+        raw_data={
+            "object_id": "99030", "object_name": "SYNTH-SAT-CRITICAL",
+            "pointing_error_deg": 70.0, "angular_rate_deg_s": 4.5, "solar_panel_power_pct": 22,
+        },
+    )
+    finding = AnomalyFinding(event_id=event_id, severity=Severity.CRITICAL, description="Test.", confidence=0.8)
+    decision = Decision(action="abort", rationale="Test rationale.", made_at=datetime.now(timezone.utc))
+    return DecisionLogEntry(
+        telemetry=telemetry, finding=finding, decision=decision,
+        rationale_provenance=GemmaProvenance(source="gemma", model_used="fake-model", latency_ms=1.0),
+    )
+
+
+def test_dashboard_groups_duplicate_needs_attention_findings(tmp_path):
+    """Real bug this fixes: several CRITICAL findings sharing the same
+    real object and metric (the same synthetic fixture logged more than
+    once) rendered as N nearly-identical cards differing only by
+    event_id - they should collapse into one summary card with a count."""
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        for i in range(3):
+            logger.log(_attitude_attention_entry(f"attn-{i}"))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        _open_section(at, "Approvals & Attention").run(timeout=30)
+
+        assert any("3 SYNTH-SAT-CRITICAL events" in m.value for m in at.markdown)
+        assert any("pointing error 70" in m.value for m in at.markdown)
+        # One bulk "Acknowledge all" action for the group, not 3 separate
+        # always-visible individual Acknowledge buttons.
+        assert any(b.label.startswith("Acknowledge all") for b in at.button)
+
+
+def test_dashboard_does_not_group_a_single_needs_attention_finding(tmp_path):
+    with _log_dir(tmp_path):
+        logger = DecisionLogger(settings=settings)
+        logger.log(_attitude_attention_entry("attn-solo"))
+
+        at = AppTest.from_file(DASHBOARD_PATH)
+        _open_section(at, "Approvals & Attention").run(timeout=30)
+
+        assert any(b.label == "Acknowledge" and b.key == "acknowledge_attn-solo" for b in at.button)
+        assert not any(b.label.startswith("Acknowledge all") for b in at.button)
